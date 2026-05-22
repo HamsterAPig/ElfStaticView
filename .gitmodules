@@ -1,0 +1,9 @@
+[submodule "3rdparty/spdlog"]
+	path = 3rdparty/spdlog
+	url = https://github.com/gabime/spdlog.git
+[submodule "3rdparty/libdwarf-code"]
+	path = 3rdparty/libdwarf-code
+	url = https://github.com/davea42/libdwarf-code.git
+[submodule "3rdparty/yaml-cpp"]
+	path = 3rdparty/yaml-cpp
+	url = https://github.com/jbeder/yaml-cpp.git
