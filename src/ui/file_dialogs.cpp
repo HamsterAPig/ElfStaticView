@@ -42,8 +42,8 @@ std::optional<std::string> run_dialog(const DWORD flags,
 std::optional<std::string> open_elf_file_dialog() {
 #if defined(_WIN32)
   return run_dialog(OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
-                    L"Open ELF or Binary",
-                    L"ELF and Binary\0*.elf;*.o;*.so;*.out;*.exe\0All Files\0*.*\0",
+                    L"打开 ELF 或二进制文件",
+                    L"ELF 与二进制文件\0*.elf;*.o;*.so;*.out;*.exe\0所有文件\0*.*\0",
                     L"elf",
                     false);
 #else
@@ -54,8 +54,8 @@ std::optional<std::string> open_elf_file_dialog() {
 std::optional<std::string> open_snapshot_file_dialog() {
 #if defined(_WIN32)
   return run_dialog(OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
-                    L"Import JSON Snapshot",
-                    L"JSON Files\0*.json\0All Files\0*.*\0",
+                    L"导入 JSON 快照",
+                    L"JSON 文件\0*.json\0所有文件\0*.*\0",
                     L"json",
                     false);
 #else
@@ -66,8 +66,8 @@ std::optional<std::string> open_snapshot_file_dialog() {
 std::optional<std::string> save_snapshot_file_dialog(const std::string& suggested_name) {
 #if defined(_WIN32)
   auto path = run_dialog(OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
-                         L"Export JSON Snapshot",
-                         L"JSON Files\0*.json\0All Files\0*.*\0",
+                         L"导出 JSON 快照",
+                         L"JSON 文件\0*.json\0所有文件\0*.*\0",
                          L"json",
                          true);
   if (path.has_value()) {

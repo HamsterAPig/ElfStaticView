@@ -30,9 +30,9 @@ struct CliOptions {
 
 void print_usage() {
   std::cout
-    << "usage:\n"
-    << "  elf-static-view ui [file]\n"
-    << "  elf-static-view scan <file> [--show-runtime-only]\n"
+    << "用法:\n"
+    << "  elf-static-view ui [file]                         打开图形界面，可选传入启动文件\n"
+    << "  elf-static-view scan <file> [--show-runtime-only] 扫描变量概览\n"
     << "  elf-static-view dump <file> [--format text|json] [--show-runtime-only]\n"
     << "                        [--only-static-known] [--symbol <name>]\n"
     << "                        [--expand-depth <n>] [--address-bias <value>]\n";
