@@ -72,7 +72,7 @@ ExpandedNode Expander::expand_type(const std::string& path,
     return node;
   }
 
-  node.type_name = type->name.empty() ? type->id : type->name;
+  node.type_name = display_type_name(type);
   node.type_kind = type->kind;
   node.byte_size = type->byte_size;
 
@@ -151,6 +151,38 @@ const TypeNode* Expander::find_type(const std::string& id) const {
     return nullptr;
   }
   return iter->second;
+}
+
+std::string Expander::display_type_name(const TypeNode* type) const {
+  if (type == nullptr) {
+    return "<unknown>";
+  }
+  if (!type->name.empty() && type->name != type->id) {
+    return type->name;
+  }
+
+  // 指针/引用/数组这类 DWARF 类型通常没有 DW_AT_name，需要从被引用类型拼出可读名称。
+  if (type->kind == TypeKind::Pointer) {
+    return display_type_name(type->pointee_type ? find_type(type->pointee_type->id) : nullptr) + "*";
+  }
+  if (type->kind == TypeKind::Reference) {
+    return display_type_name(type->pointee_type ? find_type(type->pointee_type->id) : nullptr) + "&";
+  }
+  if (type->kind == TypeKind::Qualified) {
+    return display_type_name(type->qualified_of ? find_type(type->qualified_of->id) : nullptr);
+  }
+  if (type->kind == TypeKind::Typedef) {
+    return display_type_name(type->aliased_of ? find_type(type->aliased_of->id) : nullptr);
+  }
+  if (type->kind == TypeKind::Array) {
+    auto name = display_type_name(type->element_type ? find_type(type->element_type->id) : nullptr);
+    for (const auto dimension : type->array_dimensions) {
+      name += "[" + std::to_string(dimension) + "]";
+    }
+    return name;
+  }
+
+  return type->name.empty() ? type->id : type->name;
 }
 
 std::uint64_t Expander::compute_array_count(const TypeNode& type) const {

@@ -26,6 +26,7 @@ private:
                                          std::optional<std::int64_t> relative_offset,
                                          std::size_t depth) const;
   [[nodiscard]] const TypeNode* find_type(const std::string& id) const;
+  [[nodiscard]] std::string display_type_name(const TypeNode* type) const;
   [[nodiscard]] std::uint64_t compute_array_count(const TypeNode& type) const;
   [[nodiscard]] std::optional<std::uint64_t> resolve_byte_size(const TypeNode* type) const;
 

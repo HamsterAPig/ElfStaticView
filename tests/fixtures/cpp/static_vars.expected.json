@@ -1,4 +1,6 @@
 "name": "global_object"
+"name": "global_object_ptr"
+"type_name": "Derived*"
 "path": "demo::global_object.item.value"
 "path": "demo::object_array[0]"
 "path": "demo::object_array[1]"
