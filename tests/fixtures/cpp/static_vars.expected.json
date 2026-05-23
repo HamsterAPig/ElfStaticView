@@ -3,4 +3,11 @@
 "path": "demo::object_array[0]"
 "path": "demo::object_array[1]"
 "name": "shared"
-"availability": "RuntimeOnly"
+"name": "counter"
+"kind": "StaticMember"
+"path": "demo::Derived::shared"
+"path": "demo::Derived::counter"
+"path": "demo::Holder::shared"
+"scope_path": ["demo", "Derived"]
+"scope_path": ["demo", "Holder"]
+"availability": "StaticAddressKnown"

@@ -23,7 +23,9 @@ struct ReaderContext {
   std::vector<CompileUnitRecord> compile_units;
   std::unordered_map<Dwarf_Off, std::string> type_ids;
   std::unordered_map<Dwarf_Off, std::vector<std::string>> variable_scope_by_offset;
+  std::unordered_map<Dwarf_Off, bool> variable_static_member_by_offset;
   std::vector<std::string> scope_stack;
+  std::vector<Dwarf_Half> scope_tag_stack;
   std::string current_compile_unit_name;
 };
 
@@ -74,29 +76,24 @@ void apply_symbol_addresses(const ElfSymbolTable& symbols, std::vector<VariableR
   }
 }
 
+[[nodiscard]] std::string variable_identity_name(const VariableRecord& variable) {
+  const auto full_name = analysis::join_scope(variable.scope_path, variable.name);
+  if (!full_name.empty() && variable.name != "<anon>") {
+    return full_name;
+  }
+  if (variable.linkage_name.has_value() && !variable.linkage_name->empty()) {
+    return variable.linkage_name.value();
+  }
+  return full_name;
+}
+
 void deduplicate_variables(std::vector<VariableRecord>& variables) {
   std::vector<VariableRecord> deduplicated;
   for (auto& variable : variables) {
-    const auto full_name = analysis::join_scope(variable.scope_path, variable.name);
-    std::string dedup_name = variable.linkage_name.value_or(full_name);
-    if (dedup_name.empty()) {
-      dedup_name = full_name;
-    }
-    if (dedup_name.rfind("_ZN", 0) == 0 && variable.name == "shared") {
-      dedup_name = "demo::Derived::shared";
-    }
-    if (variable.name == "shared" && !variable.scope_path.empty() && variable.scope_path.back() == "demo") {
-      dedup_name = "demo::Derived::shared";
-    }
+    const auto dedup_name = variable_identity_name(variable);
     const auto dedup_key = variable.compile_unit_name + "|" + dedup_name;
     auto existing = std::find_if(deduplicated.begin(), deduplicated.end(), [&](const VariableRecord& item) {
-      auto existing_name = item.linkage_name.value_or(analysis::join_scope(item.scope_path, item.name));
-      if (existing_name.rfind("_ZN", 0) == 0 && item.name == "shared") {
-        existing_name = "demo::Derived::shared";
-      }
-      if (item.name == "shared" && !item.scope_path.empty() && item.scope_path.back() == "demo") {
-        existing_name = "demo::Derived::shared";
-      }
+      const auto existing_name = variable_identity_name(item);
       const auto existing_key = item.compile_unit_name + "|" + existing_name;
       return existing_key == dedup_key;
     });
@@ -146,6 +143,22 @@ void deduplicate_variables(std::vector<VariableRecord>& variables) {
     default:
       return TypeKind::Unknown;
   }
+}
+
+[[nodiscard]] bool is_class_scope_tag(const Dwarf_Half tag) {
+  return tag == DW_TAG_class_type || tag == DW_TAG_structure_type || tag == DW_TAG_union_type;
+}
+
+[[nodiscard]] bool is_subprogram_scope_tag(const Dwarf_Half tag) {
+  return tag == DW_TAG_subprogram;
+}
+
+[[nodiscard]] bool scope_contains_subprogram(const std::vector<Dwarf_Half>& scope_tag_stack) {
+  return std::any_of(scope_tag_stack.begin(), scope_tag_stack.end(), is_subprogram_scope_tag);
+}
+
+[[nodiscard]] bool scope_ends_with_class(const std::vector<Dwarf_Half>& scope_tag_stack) {
+  return !scope_tag_stack.empty() && is_class_scope_tag(scope_tag_stack.back());
 }
 
 [[nodiscard]] std::string language_name(const std::optional<Dwarf_Unsigned>& value) {
@@ -374,16 +387,24 @@ void record_type(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag) {
 }
 
 [[nodiscard]] VariableKind classify_variable_kind(const std::vector<std::string>& scope_stack,
+                                                  const std::vector<Dwarf_Half>& scope_tag_stack,
                                                   const bool external,
                                                   const bool has_static_storage,
-                                                  const bool is_thread_local) {
+                                                  const bool is_thread_local,
+                                                  const bool is_static_member) {
   if (is_thread_local) {
     return VariableKind::ThreadLocal;
+  }
+  if (is_static_member || (has_static_storage && scope_ends_with_class(scope_tag_stack))) {
+    return VariableKind::StaticMember;
   }
   if (scope_stack.empty()) {
     return external ? VariableKind::Global : VariableKind::FileStatic;
   }
-  return has_static_storage ? VariableKind::FunctionStatic : VariableKind::Local;
+  if (scope_contains_subprogram(scope_tag_stack)) {
+    return has_static_storage ? VariableKind::FunctionStatic : VariableKind::Local;
+  }
+  return external ? VariableKind::Namespace : VariableKind::FileStatic;
 }
 
 void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag) {
@@ -392,6 +413,8 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
   variable.name = maybe_name(die_name(die), "<anon>");
   variable.compile_unit_name = context.current_compile_unit_name;
   variable.scope_path = context.scope_stack;
+  auto scope_tag_stack = context.scope_tag_stack;
+  bool is_static_member = scope_ends_with_class(scope_tag_stack);
   variable.has_static_storage = tag == DW_TAG_variable;
 
   if (const auto type_attr = attribute_of(context.debug, die, DW_AT_type); type_attr.has_value()) {
@@ -401,30 +424,6 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
   }
   if (const auto byte_size_attr = attribute_of(context.debug, die, DW_AT_byte_size); byte_size_attr.has_value()) {
     variable.byte_size = unsigned_attr(byte_size_attr->get());
-  }
-  if (variable.name == "<anon>") {
-    if (const auto specification_attr = attribute_of(context.debug, die, DW_AT_specification);
-        specification_attr.has_value()) {
-      if (const auto specification_offset = global_type_offset(specification_attr->get());
-          specification_offset.has_value()) {
-        if (auto specification_die = die_from_offset(context.debug, specification_offset.value(), true);
-            specification_die.has_value()) {
-          variable.name = maybe_name(die_name(specification_die->get()), variable.name);
-          variable.scope_path = context.scope_stack;
-          if (!variable.scope_path.empty() && variable.scope_path.back() != "Derived") {
-            variable.scope_path.push_back("Derived");
-          }
-          if (variable.type.id == "type@unknown") {
-            if (const auto spec_type_attr =
-                  attribute_of(context.debug, specification_die->get(), DW_AT_type);
-                spec_type_attr.has_value()) {
-              variable.type =
-                TypeRef{resolve_type_id(context, global_type_offset(spec_type_attr->get()))};
-            }
-          }
-        }
-      }
-    }
   }
   if (const auto linkage_attr = attribute_of(context.debug, die, DW_AT_linkage_name); linkage_attr.has_value()) {
     variable.linkage_name = string_attr(linkage_attr->get());
@@ -446,12 +445,6 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
                 location_desc->operations.end(),
                 [](const LocationOp& op) { return op.atom == DW_OP_form_tls_address; });
   variable.is_thread_local = is_thread_local;
-  variable.variable_kind = (tag == DW_TAG_formal_parameter)
-                             ? VariableKind::Parameter
-                             : classify_variable_kind(context.scope_stack,
-                                                      external,
-                                                      variable.has_static_storage,
-                                                      is_thread_local);
   // 这里先把位置表达式归一到统一模型，后面的 CLI 和测试都只依赖这个分类结果。
   variable.availability = Availability::Unavailable;
   variable.address = classify_location(location_desc, direct_addr, variable.availability);
@@ -477,6 +470,11 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
           found_scope != context.variable_scope_by_offset.end()) {
         variable.scope_path = found_scope->second;
       }
+      if (const auto found_static_member =
+            context.variable_static_member_by_offset.find(specification_offset.value());
+          found_static_member != context.variable_static_member_by_offset.end()) {
+        is_static_member = found_static_member->second;
+      }
       if (variable.name == "<anon>") {
         if (auto specification_die = die_from_offset(context.debug, specification_offset.value(), true);
             specification_die.has_value()) {
@@ -494,6 +492,22 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
     }
   }
 
+  if (variable.scope_path != context.scope_stack) {
+    scope_tag_stack.clear();
+  }
+  variable.variable_kind =
+    (tag == DW_TAG_formal_parameter)
+      ? VariableKind::Parameter
+      : classify_variable_kind(variable.scope_path,
+                               scope_tag_stack,
+                               external,
+                               variable.has_static_storage,
+                               is_thread_local,
+                               is_static_member);
+
+  const auto variable_offset = die_offset(die).value_or(0);
+  context.variable_scope_by_offset[variable_offset] = variable.scope_path;
+  context.variable_static_member_by_offset[variable_offset] = is_static_member;
   context.variables.push_back(std::move(variable));
 }
 
@@ -520,6 +534,7 @@ void walk_die_tree(ReaderContext& context, Dwarf_Die die, const bool is_info) {
     tag == DW_TAG_structure_type;
   if (pushes_scope) {
     context.scope_stack.push_back(maybe_name(die_name(die), "<anon>"));
+    context.scope_tag_stack.push_back(tag);
   }
 
   if (is_type_tag(tag)) {
@@ -531,6 +546,7 @@ void walk_die_tree(ReaderContext& context, Dwarf_Die die, const bool is_info) {
   walk_children(context, die, is_info);
 
   if (pushes_scope) {
+    context.scope_tag_stack.pop_back();
     context.scope_stack.pop_back();
   }
 }
