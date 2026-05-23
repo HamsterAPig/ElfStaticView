@@ -43,6 +43,7 @@ std::string read_all_text(const std::string& path) {
 }
 
 constexpr float kBaseFontSize = 18.0F;
+constexpr double kIdleFrameTimeoutSeconds = 0.05;
 
 float sanitize_ui_scale(const float x_scale, const float y_scale) {
   const float candidate = std::max(x_scale, y_scale);
@@ -94,8 +95,8 @@ void configure_ui_font(ImGuiIO& io, const float ui_scale) {
 
     ImFontConfig font_config {};
     font_config.SizePixels = std::round(kBaseFontSize * ui_scale);
-    font_config.OversampleH = 3;
-    font_config.OversampleV = 2;
+    font_config.OversampleH = 2;
+    font_config.OversampleV = 1;
 
     for (const wchar_t* font_name : kCandidateFonts) {
       const auto font_path = fonts_directory / font_name;
@@ -143,6 +144,10 @@ int Application::run() {
 
   load_startup_content();
   while (window_ != nullptr && glfwWindowShouldClose(window_) == 0) {
+    if (!needs_redraw_ && !ui_scale_dirty_) {
+      glfwWaitEventsTimeout(kIdleFrameTimeoutSeconds);
+      continue;
+    }
     render_frame();
   }
   return 0;
@@ -207,6 +212,7 @@ bool Application::initialize() {
     log_error(state_, error.what());
   }
   log_info(state_, "UI 初始化完成");
+  request_redraw();
   return true;
 }
 
@@ -220,6 +226,7 @@ void Application::glfw_drop_callback(GLFWwindow* window, const int count, const 
     app->load_file_into_state(paths[0]);
   } catch (const std::exception& error) {
     log_error(app->state_, error.what());
+    app->request_redraw();
   }
 }
 
@@ -265,6 +272,7 @@ void Application::load_startup_content() {
   if (state_.window_title_dirty) {
     refresh_window_title();
   }
+  request_redraw();
 }
 
 void Application::load_file_into_state(const std::string& path) {
@@ -297,9 +305,19 @@ void Application::refresh_window_title() {
   state_.window_title_dirty = false;
 }
 
+void Application::request_redraw() {
+  needs_redraw_ = true;
+  if (window_ != nullptr) {
+    glfwPostEmptyEvent();
+  }
+}
+
 void Application::queue_ui_scale(const float x_scale, const float y_scale) {
   pending_ui_scale_ = sanitize_ui_scale(x_scale, y_scale);
   ui_scale_dirty_ = std::abs(pending_ui_scale_ - ui_scale_) > 0.01F;
+  if (ui_scale_dirty_) {
+    request_redraw();
+  }
 }
 
 void Application::apply_pending_ui_scale() {
@@ -317,11 +335,11 @@ void Application::apply_pending_ui_scale() {
 }
 
 void Application::render_frame() {
+  needs_redraw_ = false;
   if (ui_scale_dirty_) {
     // DPI 变化时在帧起点统一重建字体与样式，避免窗口跨屏后继续使用旧字形纹理。
     apply_pending_ui_scale();
   }
-  glfwPollEvents();
 
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplGlfw_NewFrame();
@@ -331,6 +349,7 @@ void Application::render_frame() {
   window.render(state_);
   if (state_.window_title_dirty) {
     refresh_window_title();
+    needs_redraw_ = true;
   }
   if (state_.request_exit) {
     glfwSetWindowShouldClose(window_, GLFW_TRUE);

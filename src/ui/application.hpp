@@ -32,6 +32,7 @@ private:
   void load_startup_content();
   void load_file_into_state(const std::string& path);
   void refresh_window_title();
+  void request_redraw();
   void queue_ui_scale(float x_scale, float y_scale);
   void apply_pending_ui_scale();
   void render_frame();
@@ -45,6 +46,7 @@ private:
   float ui_scale_ = 1.0F;
   float pending_ui_scale_ = 1.0F;
   bool ui_scale_dirty_ = false;
+  bool needs_redraw_ = true;
 };
 
 }  // namespace elf_static_view::ui
