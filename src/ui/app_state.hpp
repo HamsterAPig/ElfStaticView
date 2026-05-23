@@ -35,11 +35,15 @@ struct FilterState {
 };
 
 struct VersionCheckState {
+  std::string repository_url;
   std::string check_uri;
   std::string latest_version;
   std::string release_url;
+  std::string release_name;
+  std::string release_notes;
   std::string message;
   bool has_new_version = false;
+  bool check_uri_uses_default = false;
 };
 
 struct AppState {

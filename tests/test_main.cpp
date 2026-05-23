@@ -437,11 +437,15 @@ void verify_ui_config_round_trip() {
   first_state.address_bias_input = "0x123";
   first_state.address_bias = elf_static_view::parse_address_bias(first_state.address_bias_input);
   first_state.version_check = elf_static_view::ui::VersionCheckState {
+    .repository_url = "https://example.com/project",
     .check_uri = "https://example.com/releases.yaml",
     .latest_version = {},
     .release_url = {},
+    .release_name = {},
+    .release_notes = {},
     .message = {},
     .has_new_version = false,
+    .check_uri_uses_default = false,
   };
   elf_static_view::ui::save_app_config(first_state);
 
@@ -455,6 +459,8 @@ void verify_ui_config_round_trip() {
               "地址偏移输入框文本应当从配置文件恢复");
   expect_true(restored_state.version_check.has_value(),
               "版本检查 URI 应当从配置文件恢复");
+  expect_true(restored_state.version_check->repository_url == "https://example.com/project",
+              "仓库地址恢复值不正确");
   expect_true(restored_state.version_check->check_uri == "https://example.com/releases.yaml",
               "版本检查 URI 恢复值不正确");
 
@@ -474,6 +480,76 @@ void verify_ui_config_round_trip() {
   std::filesystem::remove_all(temp_root);
 }
 
+void verify_version_check_resolution() {
+  const auto& defaults = elf_static_view::ui::default_release_metadata();
+
+  elf_static_view::ui::AppState default_state;
+  const auto resolved_default = elf_static_view::ui::resolve_version_check_state(default_state);
+  expect_true(resolved_default.repository_url == defaults.repository_url,
+              "默认仓库地址应当回退到 GitHub 仓库");
+  expect_true(resolved_default.check_uri == defaults.releases_api_url,
+              "默认版本检查地址应当回退到 GitHub Releases API");
+  expect_true(resolved_default.check_uri_uses_default,
+              "默认版本检查来源应当标记为默认 GitHub");
+
+  elf_static_view::ui::AppState custom_state;
+  custom_state.version_check = elf_static_view::ui::VersionCheckState {
+    .repository_url = "https://example.com/custom-repo",
+    .check_uri = {},
+    .latest_version = {},
+    .release_url = {},
+    .release_name = {},
+    .release_notes = {},
+    .message = {},
+    .has_new_version = false,
+    .check_uri_uses_default = true,
+  };
+  const auto resolved_custom = elf_static_view::ui::resolve_version_check_state(custom_state);
+  expect_true(resolved_custom.repository_url == "https://example.com/custom-repo",
+              "配置仓库地址后，应当优先显示配置值");
+  expect_true(resolved_custom.check_uri == defaults.releases_api_url,
+              "仅配置仓库地址时，版本检查地址仍应回退到默认 GitHub API");
+}
+
+void verify_version_response_parsing() {
+  const auto custom_result = elf_static_view::ui::parse_version_response_text(
+    "latest_version: 1.2.3\nrelease_url: https://example.com/releases/1.2.3\nname: Example Release\n"
+    "body: Example Notes\n",
+    "https://example.com/releases.yaml",
+    "https://example.com/project");
+  expect_true(custom_result.latest_version == "1.2.3",
+              "自定义版本响应应当解析 latest_version");
+  expect_true(custom_result.release_url == "https://example.com/releases/1.2.3",
+              "自定义版本响应应当解析 release_url");
+  expect_true(custom_result.release_name == "Example Release",
+              "自定义版本响应应当解析 name");
+  expect_true(custom_result.release_notes == "Example Notes",
+              "自定义版本响应应当解析 body");
+
+  const auto github_result = elf_static_view::ui::parse_version_response_text(
+    R"({"tag_name":"v2.0.0","html_url":"https://github.com/HamsterAPig/ElfStaticView/releases/tag/v2.0.0","name":"v2.0.0 Windows","body":"GitHub Release Notes"})",
+    "https://api.github.com/repos/HamsterAPig/ElfStaticView/releases/latest",
+    "https://github.com/HamsterAPig/ElfStaticView");
+  expect_true(github_result.latest_version == "v2.0.0",
+              "GitHub Releases JSON 应当解析 tag_name");
+  expect_true(github_result.release_url ==
+                "https://github.com/HamsterAPig/ElfStaticView/releases/tag/v2.0.0",
+              "GitHub Releases JSON 应当解析 html_url");
+  expect_true(github_result.release_name == "v2.0.0 Windows",
+              "GitHub Releases JSON 应当解析 name");
+  expect_true(github_result.release_notes == "GitHub Release Notes",
+              "GitHub Releases JSON 应当解析 body");
+}
+
+void verify_version_compare_rules() {
+  expect_true(elf_static_view::ui::compare_version_strings("v0.1.0", "0.1.0") == 0,
+              "版本比较应当兼容可选的 v 前缀");
+  expect_true(elf_static_view::ui::compare_version_strings("0.1.0+abcd1234", "0.1.0") == 0,
+              "开发态版本不应被误判成比同基线 tag 更新");
+  expect_true(elf_static_view::ui::compare_version_strings("0.1.0+abcd1234", "v0.1.1") < 0,
+              "开发态版本仍应识别到更高的发布版本");
+}
+
 }  // namespace
 
 int main() {
@@ -487,6 +563,9 @@ int main() {
     verify_utf8_path_helpers();
     verify_elf_symbol_table_endian_matrix();
     verify_ui_config_round_trip();
+    verify_version_check_resolution();
+    verify_version_response_parsing();
+    verify_version_compare_rules();
     std::cout << "all tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

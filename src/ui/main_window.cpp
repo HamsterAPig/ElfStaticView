@@ -476,12 +476,43 @@ void render_about_dialog(AppState& state) {
   }
   ImGui::OpenPopup("About ElfStaticView");
   if (ImGui::BeginPopupModal("About ElfStaticView", &state.show_about_dialog, ImGuiWindowFlags_AlwaysAutoResize)) {
+    const ReleaseMetadata& release_metadata = default_release_metadata();
+    const VersionCheckState effective_version_check = resolve_version_check_state(state);
+
     ImGui::TextUnformatted("ElfStaticView");
     ImGui::Separator();
     ImGui::Text("Version: %s", current_version_string().c_str());
+    ImGui::Text("Author: %s", release_metadata.author_name.c_str());
+    ImGui::Text("Email: %s", release_metadata.author_email.c_str());
     ImGui::TextUnformatted("GLFW + OpenGL3 + Dear ImGui");
     ImGui::TextUnformatted("Offline ELF/DWARF static variable explorer");
     ImGui::TextUnformatted("Dependencies: ImGui, GLFW, libdwarf, yaml-cpp");
+    ImGui::Separator();
+    ImGui::TextUnformatted("Repository:");
+    ImGui::SameLine();
+    ImGui::TextLinkOpenURL(effective_version_check.repository_url.c_str(),
+                           effective_version_check.repository_url.c_str());
+    ImGui::TextWrapped("Update Source: %s",
+                       effective_version_check.check_uri_uses_default
+                         ? "Default GitHub Releases API"
+                         : "Configured updates.check_uri");
+    ImGui::TextWrapped("Update URI: %s", effective_version_check.check_uri.c_str());
+    if (!effective_version_check.latest_version.empty()) {
+      ImGui::Text("Latest Seen Version: %s", effective_version_check.latest_version.c_str());
+    }
+    if (!effective_version_check.release_name.empty()) {
+      ImGui::TextWrapped("Latest Release Name: %s", effective_version_check.release_name.c_str());
+    }
+    if (!effective_version_check.release_url.empty()) {
+      ImGui::TextUnformatted("Latest Release Page:");
+      ImGui::SameLine();
+      ImGui::TextLinkOpenURL(effective_version_check.release_url.c_str(),
+                             effective_version_check.release_url.c_str());
+    }
+    if (!effective_version_check.message.empty()) {
+      ImGui::Separator();
+      ImGui::TextWrapped("%s", effective_version_check.message.c_str());
+    }
     if (ImGui::Button("Close")) {
       state.show_about_dialog = false;
       ImGui::CloseCurrentPopup();

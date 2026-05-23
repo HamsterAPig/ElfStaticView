@@ -27,6 +27,11 @@ namespace elf_static_view::ui {
 namespace {
 
 constexpr char kConfigFileName[] = "elf-static-view.yaml";
+constexpr char kDefaultRepositoryUrl[] = "https://github.com/HamsterAPig/ElfStaticView";
+constexpr char kDefaultReleasesApiUrl[] =
+  "https://api.github.com/repos/HamsterAPig/ElfStaticView/releases/latest";
+constexpr char kDefaultAuthorName[] = "HamsterAPig";
+constexpr char kDefaultAuthorEmail[] = "diyhome@outlook.com";
 
 std::string trim_copy(const std::string_view value) {
   std::size_t begin = 0;
@@ -57,6 +62,22 @@ std::string read_yaml_scalar(const YAML::Node& node, const char* key) {
     return {};
   }
   return trim_copy(node[key].as<std::string>());
+}
+
+std::string first_non_empty(std::string first,
+                            std::string second = {},
+                            std::string third = {},
+                            std::string fourth = {}) {
+  if (!first.empty()) {
+    return first;
+  }
+  if (!second.empty()) {
+    return second;
+  }
+  if (!third.empty()) {
+    return third;
+  }
+  return fourth;
 }
 
 bool read_yaml_bool(const YAML::Node& node, const char* key, const bool default_value) {
@@ -109,7 +130,7 @@ void write_config_root(const std::filesystem::path& path, const YAML::Node& root
   output << emitter.c_str();
 }
 
-int compare_versions(const std::string& left, const std::string& right) {
+int compare_versions_impl(const std::string& left, const std::string& right) {
   const std::string clean_left = strip_version_prefix(left);
   const std::string clean_right = strip_version_prefix(right);
   std::size_t left_cursor = 0;
@@ -259,59 +280,136 @@ std::string http_get_text(const std::string&) {
 
 #endif
 
-VersionCheckState parse_version_response(const std::string& response_text,
-                                         const std::string& check_uri) {
-  const YAML::Node root = YAML::Load(response_text);
-  VersionCheckState result;
-  result.check_uri = check_uri;
-  result.latest_version = read_yaml_scalar(root, "version");
-  if (result.latest_version.empty()) {
-    result.latest_version = read_yaml_scalar(root, "latest_version");
-  }
-  result.release_url = read_yaml_scalar(root, "url");
-  if (result.release_url.empty()) {
-    result.release_url = read_yaml_scalar(root, "release_url");
-  }
+}  // namespace
 
-  if (result.latest_version.empty()) {
-    throw std::runtime_error("版本检查响应缺少 version 或 latest_version 字段");
-  }
-
-  result.has_new_version = compare_versions(ELF_STATIC_VIEW_VERSION, result.latest_version) < 0;
-  std::ostringstream message;
-  if (result.has_new_version) {
-    message << "发现新版本 " << result.latest_version << "，当前版本 "
-            << ELF_STATIC_VIEW_VERSION;
-  } else {
-    message << "当前已是最新版本 " << ELF_STATIC_VIEW_VERSION;
-  }
-  result.message = message.str();
-  return result;
+const ReleaseMetadata& default_release_metadata() {
+  static const ReleaseMetadata metadata {
+    .repository_url = kDefaultRepositoryUrl,
+    .releases_api_url = kDefaultReleasesApiUrl,
+    .author_name = kDefaultAuthorName,
+    .author_email = kDefaultAuthorEmail,
+  };
+  return metadata;
 }
 
-}  // namespace
+int compare_version_strings(const std::string& left, const std::string& right) {
+  return compare_versions_impl(left, right);
+}
 
 std::string current_version_string() {
   return ELF_STATIC_VIEW_VERSION;
+}
+
+VersionCheckState resolve_version_check_state(const AppState& state) {
+  const ReleaseMetadata& defaults = default_release_metadata();
+  // 运行时始终先用内置 GitHub 元数据兜底，再叠加配置值和最近一次检查结果。
+  VersionCheckState resolved {
+    .repository_url = defaults.repository_url,
+    .check_uri = defaults.releases_api_url,
+    .latest_version = {},
+    .release_url = {},
+    .release_name = {},
+    .release_notes = {},
+    .message = {},
+    .has_new_version = false,
+    .check_uri_uses_default = true,
+  };
+
+  if (!state.version_check.has_value()) {
+    return resolved;
+  }
+
+  const VersionCheckState& stored = state.version_check.value();
+  if (!stored.repository_url.empty()) {
+    resolved.repository_url = stored.repository_url;
+  }
+  if (!stored.check_uri.empty()) {
+    resolved.check_uri = stored.check_uri;
+    resolved.check_uri_uses_default = false;
+  }
+  if (!stored.latest_version.empty()) {
+    resolved.latest_version = stored.latest_version;
+  }
+  if (!stored.release_url.empty()) {
+    resolved.release_url = stored.release_url;
+  }
+  resolved.release_name = stored.release_name;
+  resolved.release_notes = stored.release_notes;
+  resolved.message = stored.message;
+  resolved.has_new_version = stored.has_new_version;
+  return resolved;
+}
+
+VersionCheckState parse_version_response_text(const std::string& response_text,
+                                              const std::string& check_uri,
+                                              const std::string& repository_url) {
+  const YAML::Node root = YAML::Load(response_text);
+  const ReleaseMetadata& defaults = default_release_metadata();
+
+  VersionCheckState result;
+  result.repository_url = repository_url.empty() ? defaults.repository_url : repository_url;
+  result.check_uri = check_uri;
+  result.check_uri_uses_default = check_uri == defaults.releases_api_url;
+  // 这里同时兼容历史自定义 YAML 字段和 GitHub Releases JSON 字段。
+  result.latest_version = first_non_empty(read_yaml_scalar(root, "version"),
+                                          read_yaml_scalar(root, "latest_version"),
+                                          read_yaml_scalar(root, "tag_name"));
+  result.release_url = first_non_empty(read_yaml_scalar(root, "url"),
+                                       read_yaml_scalar(root, "release_url"),
+                                       read_yaml_scalar(root, "html_url"),
+                                       result.repository_url);
+  result.release_name = first_non_empty(read_yaml_scalar(root, "name"), result.latest_version);
+  result.release_notes = first_non_empty(read_yaml_scalar(root, "body"),
+                                         read_yaml_scalar(root, "notes"));
+
+  if (result.latest_version.empty()) {
+    throw std::runtime_error("版本检查响应缺少 version、latest_version 或 tag_name 字段");
+  }
+
+  result.has_new_version = compare_version_strings(current_version_string(), result.latest_version) < 0;
+  std::ostringstream message;
+  if (result.has_new_version) {
+    message << "发现新版本 " << result.latest_version << "，当前版本 "
+            << current_version_string();
+  } else {
+    message << "当前已是最新版本 " << current_version_string();
+  }
+  if (!result.release_name.empty() && result.release_name != result.latest_version) {
+    message << "（" << result.release_name << "）";
+  }
+  result.message = message.str();
+  return result;
 }
 
 void load_app_config(AppState& state, const std::filesystem::path& executable_path) {
   state.config_path = config_path_for_executable(executable_path);
   if (!std::filesystem::exists(state.config_path)) {
     log_info(state, "未找到配置文件: " + path_to_log_text(state.config_path));
+    log_info(state, "未配置 updates.check_uri，版本检查将回退到默认 GitHub Releases API。");
     return;
   }
 
   const YAML::Node root = load_existing_config_root(state.config_path);
-  const std::string check_uri = read_yaml_scalar(root["updates"], "check_uri");
-  if (!check_uri.empty()) {
+  const YAML::Node updates = root["updates"];
+  const std::string check_uri = read_yaml_scalar(updates, "check_uri");
+  const std::string repository_url = read_yaml_scalar(updates, "repository_url");
+  if (!check_uri.empty() || !repository_url.empty()) {
     VersionCheckState version_check;
+    version_check.repository_url = repository_url;
     version_check.check_uri = check_uri;
-    version_check.message = "版本检查 URI 已加载";
+    version_check.check_uri_uses_default = check_uri.empty();
     state.version_check = version_check;
+  }
+
+  if (!check_uri.empty()) {
     log_info(state, "版本检查 URI 已加载: " + check_uri);
   } else {
-    log_info(state, "配置文件未启用版本检查: " + path_to_log_text(state.config_path));
+    log_info(state, "未配置 updates.check_uri，版本检查将回退到默认 GitHub Releases API。");
+  }
+  if (!repository_url.empty()) {
+    log_info(state, "仓库地址已加载: " + repository_url);
+  } else {
+    log_info(state, "未配置 updates.repository_url，About 将显示默认 GitHub 仓库地址。");
   }
 
   const YAML::Node address_bias = root["address_bias"];
@@ -342,8 +440,13 @@ void save_app_config(const AppState& state) {
   }
 
   YAML::Node root = load_existing_config_root(state.config_path);
-  if (state.version_check.has_value() && !state.version_check->check_uri.empty()) {
-    root["updates"]["check_uri"] = state.version_check->check_uri;
+  if (state.version_check.has_value()) {
+    if (!state.version_check->check_uri.empty()) {
+      root["updates"]["check_uri"] = state.version_check->check_uri;
+    }
+    if (!state.version_check->repository_url.empty()) {
+      root["updates"]["repository_url"] = state.version_check->repository_url;
+    }
   }
 
   YAML::Node address_bias = root["address_bias"];
@@ -359,14 +462,12 @@ void save_app_config(const AppState& state) {
 }
 
 void check_for_new_version(AppState& state) {
-  if (!state.version_check.has_value() || state.version_check->check_uri.empty()) {
-    log_error(state, "未配置版本检查 URI，请在 elf-static-view.yaml 中设置 updates.check_uri");
-    return;
-  }
-
-  const std::string check_uri = state.version_check->check_uri;
-  const std::string response_text = http_get_text(check_uri);
-  state.version_check = parse_version_response(response_text, check_uri);
+  VersionCheckState effective_state = resolve_version_check_state(state);
+  const std::string response_text = http_get_text(effective_state.check_uri);
+  state.version_check = parse_version_response_text(response_text,
+                                                    effective_state.check_uri,
+                                                    effective_state.repository_url);
+  state.version_check->check_uri_uses_default = effective_state.check_uri_uses_default;
   log_info(state, state.version_check->message);
 }
 
