@@ -1,0 +1,58 @@
+name: Feature 请求
+description: 提出新功能、交互优化或分析能力增强建议
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请尽量聚焦实际使用场景，说明它会解决什么问题，以及期望怎样落到当前项目形态里。
+  - type: input
+    id: summary
+    attributes:
+      label: 一句话需求
+      placeholder: 例如：支持在变量树中按地址范围过滤
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 主要涉及模块
+      options:
+        - ELF / DWARF 解析
+        - 分析模型 / 快照
+        - GUI 交互
+        - CLI 输出
+        - 配置 / 版本检查
+        - 构建 / 发布 / 测试
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 使用场景
+      description: 你在什么任务中需要这个能力
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 当前痛点
+      description: 当前缺少什么，或者现有行为哪里不顺手
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 期望方案
+      description: 可以描述交互、命令、输出、配置项或数据结构
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: 约束与补充
+      description: 例如性能、兼容性、输入文件规模、是否影响现有配置或 release
+

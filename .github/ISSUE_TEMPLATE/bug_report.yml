@@ -1,0 +1,76 @@
+name: Bug 反馈
+description: 报告 ELF 解析、界面行为、构建或发布相关缺陷
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供可复现的输入文件、日志、截图和构建环境，这能帮助更快定位问题。
+  - type: input
+    id: version
+    attributes:
+      label: 版本号或提交
+      description: 例如 `v0.1.2`、`main`、完整或短提交 hash
+      placeholder: v0.1.2 / fff24aa
+    validations:
+      required: true
+  - type: dropdown
+    id: target
+    attributes:
+      label: 受影响入口
+      options:
+        - GUI（elf-static-view）
+        - CLI（elf-static-view-cli）
+        - 两者都有
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: 操作系统与编译环境
+      description: 例如 Windows 11 + Visual Studio 2022 / Ninja + clang
+      placeholder: Windows 11 24H2, VS2022, CMake 3.30, clang 18
+    validations:
+      required: true
+  - type: textarea
+    id: input_file
+    attributes:
+      label: 输入文件与配置
+      description: 请说明 ELF / 快照文件来源，以及是否使用 `elf-static-view.yaml`
+      placeholder: |
+        输入文件：
+        配置文件：
+        是否自定义 updates.check_uri / copy.address_base：
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 重现步骤
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 执行命令 ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志、截图或额外信息
+      description: 可粘贴错误日志、CLI 输出、堆栈、截图说明
+      render: shell
+
