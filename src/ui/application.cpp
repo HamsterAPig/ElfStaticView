@@ -43,7 +43,6 @@ std::string read_all_text(const std::string& path) {
 }
 
 constexpr float kBaseFontSize = 18.0F;
-constexpr double kIdleFrameTimeoutSeconds = 0.05;
 
 float sanitize_ui_scale(const float x_scale, const float y_scale) {
   const float candidate = std::max(x_scale, y_scale);
@@ -145,8 +144,9 @@ int Application::run() {
   load_startup_content();
   while (window_ != nullptr && glfwWindowShouldClose(window_) == 0) {
     if (!needs_redraw_ && !ui_scale_dirty_) {
-      glfwWaitEventsTimeout(kIdleFrameTimeoutSeconds);
-      continue;
+      // 空闲时阻塞等待事件；一旦收到事件，立刻补一帧把交互结果真正绘制出来。
+      glfwWaitEvents();
+      needs_redraw_ = true;
     }
     render_frame();
   }
