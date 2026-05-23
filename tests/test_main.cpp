@@ -1,4 +1,5 @@
 #include "elf_static_view/project.hpp"
+#include "platform/utf8.hpp"
 #include "ui/filter_matcher.hpp"
 
 #include <cstdlib>
@@ -172,6 +173,18 @@ void verify_address_bias() {
               "高地址减偏移应保持 uint64_t 语义");
 }
 
+void verify_utf8_path_helpers() {
+#if defined(_WIN32)
+  constexpr auto sample_literal = u8"中文/静态变量.json";
+  const std::string sample(reinterpret_cast<const char*>(sample_literal), sizeof(sample_literal) - 1);
+  const std::wstring wide = elf_static_view::platform::utf8_to_wide(sample);
+  expect_true(elf_static_view::platform::wide_to_utf8(wide) == sample, "UTF-8 与宽字符转换应可往返");
+
+  const auto path = elf_static_view::platform::utf8_path(sample);
+  expect_true(elf_static_view::platform::path_to_utf8(path) == sample, "UTF-8 路径转换应保留原始内容");
+#endif
+}
+
 }  // namespace
 
 int main() {
@@ -181,6 +194,7 @@ int main() {
     verify_json_round_trip(ELF_STATIC_VIEW_CPP_FIXTURE_PATH);
     verify_filter_rules();
     verify_address_bias();
+    verify_utf8_path_helpers();
     std::cout << "all tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

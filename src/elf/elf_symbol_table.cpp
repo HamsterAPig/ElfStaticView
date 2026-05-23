@@ -1,5 +1,7 @@
 #include "elf/elf_symbol_table.hpp"
 
+#include "platform/utf8.hpp"
+
 #include <array>
 #include <fstream>
 #include <stdexcept>
@@ -74,7 +76,7 @@ std::string read_c_string(const std::vector<char>& table, const std::uint32_t of
 }  // namespace
 
 ElfSymbolTable ElfSymbolTable::load(const std::string& file_path) {
-  std::ifstream input(file_path, std::ios::binary);
+  std::ifstream input(platform::utf8_path(file_path), std::ios::binary);
   if (!input.is_open()) {
     throw std::runtime_error("无法打开 ELF 文件: " + file_path);
   }

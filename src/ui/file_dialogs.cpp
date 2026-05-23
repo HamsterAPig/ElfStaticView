@@ -1,5 +1,7 @@
 #include "ui/file_dialogs.hpp"
 
+#include "platform/utf8.hpp"
+
 #if defined(_WIN32)
 #include <windows.h>
 #include <commdlg.h>
@@ -13,25 +15,25 @@ namespace {
 
 #if defined(_WIN32)
 std::optional<std::string> run_dialog(const DWORD flags,
-                                      const std::string& title,
-                                      const char* filter,
-                                      const char* default_extension,
+                                      const wchar_t* title,
+                                      const wchar_t* filter,
+                                      const wchar_t* default_extension,
                                       const bool save_dialog) {
-  std::array<char, MAX_PATH> buffer{};
-  OPENFILENAMEA dialog{};
+  std::array<wchar_t, 4096> buffer{};
+  OPENFILENAMEW dialog{};
   dialog.lStructSize = sizeof(dialog);
   dialog.lpstrFile = buffer.data();
   dialog.nMaxFile = static_cast<DWORD>(buffer.size());
   dialog.lpstrFilter = filter;
-  dialog.lpstrTitle = title.c_str();
+  dialog.lpstrTitle = title;
   dialog.Flags = flags;
   dialog.lpstrDefExt = default_extension;
 
-  const BOOL result = save_dialog ? GetSaveFileNameA(&dialog) : GetOpenFileNameA(&dialog);
+  const BOOL result = save_dialog ? GetSaveFileNameW(&dialog) : GetOpenFileNameW(&dialog);
   if (result == FALSE) {
     return std::nullopt;
   }
-  return std::string(dialog.lpstrFile);
+  return platform::wide_to_utf8(dialog.lpstrFile);
 }
 #endif
 
@@ -40,9 +42,9 @@ std::optional<std::string> run_dialog(const DWORD flags,
 std::optional<std::string> open_elf_file_dialog() {
 #if defined(_WIN32)
   return run_dialog(OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
-                    "Open ELF or Binary",
-                    "ELF and Binary\0*.elf;*.o;*.so;*.out;*.exe\0All Files\0*.*\0",
-                    "elf",
+                    L"Open ELF or Binary",
+                    L"ELF and Binary\0*.elf;*.o;*.so;*.out;*.exe\0All Files\0*.*\0",
+                    L"elf",
                     false);
 #else
   return std::nullopt;
@@ -52,9 +54,9 @@ std::optional<std::string> open_elf_file_dialog() {
 std::optional<std::string> open_snapshot_file_dialog() {
 #if defined(_WIN32)
   return run_dialog(OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
-                    "Import JSON Snapshot",
-                    "JSON Files\0*.json\0All Files\0*.*\0",
-                    "json",
+                    L"Import JSON Snapshot",
+                    L"JSON Files\0*.json\0All Files\0*.*\0",
+                    L"json",
                     false);
 #else
   return std::nullopt;
@@ -64,9 +66,9 @@ std::optional<std::string> open_snapshot_file_dialog() {
 std::optional<std::string> save_snapshot_file_dialog(const std::string& suggested_name) {
 #if defined(_WIN32)
   auto path = run_dialog(OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
-                         "Export JSON Snapshot",
-                         "JSON Files\0*.json\0All Files\0*.*\0",
-                         "json",
+                         L"Export JSON Snapshot",
+                         L"JSON Files\0*.json\0All Files\0*.*\0",
+                         L"json",
                          true);
   if (path.has_value()) {
     return path;

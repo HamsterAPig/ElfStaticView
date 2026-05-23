@@ -2,9 +2,14 @@
 
 #include "elf_static_view/project.hpp"
 #include "logging/logger.hpp"
+#include "platform/utf8.hpp"
 #include "ui/file_dialogs.hpp"
 #include "ui/filter_matcher.hpp"
 #include "ui/main_window.hpp"
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include <GLFW/glfw3.h>
 #include <imgui.h>
@@ -12,6 +17,7 @@
 #include <backends/imgui_impl_opengl3.h>
 
 #include <exception>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
@@ -22,13 +28,54 @@ namespace elf_static_view::ui {
 namespace {
 
 std::string read_all_text(const std::string& path) {
-  std::ifstream input(path, std::ios::binary);
+  std::ifstream input(platform::utf8_path(path), std::ios::binary);
   if (!input.is_open()) {
     throw std::runtime_error("无法打开文件: " + path);
   }
   std::ostringstream stream;
   stream << input.rdbuf();
   return stream.str();
+}
+
+void configure_ui_font(ImGuiIO& io) {
+  io.Fonts->Clear();
+#if defined(_WIN32)
+  wchar_t windows_directory[MAX_PATH] = {};
+  const UINT length = GetWindowsDirectoryW(windows_directory, MAX_PATH);
+  if (length > 0) {
+    // Windows 默认字体不带中文字形，这里优先挑系统里常见的简体中文字体。
+    const std::filesystem::path fonts_directory =
+      std::filesystem::path(windows_directory) / "Fonts";
+    constexpr const wchar_t* kCandidateFonts[] = {
+      L"msyh.ttc",
+      L"msyhbd.ttc",
+      L"simhei.ttf",
+      L"simsun.ttc",
+    };
+
+    ImFontConfig font_config {};
+    font_config.OversampleH = 2;
+    font_config.PixelSnapH = true;
+
+    for (const wchar_t* font_name : kCandidateFonts) {
+      const auto font_path = fonts_directory / font_name;
+      if (!std::filesystem::exists(font_path)) {
+        continue;
+      }
+
+      const std::string utf8_font_path = platform::path_to_utf8(font_path);
+      if (ImFont* font = io.Fonts->AddFontFromFileTTF(
+            utf8_font_path.c_str(),
+            18.0F,
+            &font_config,
+            io.Fonts->GetGlyphRangesChineseSimplifiedCommon())) {
+        io.FontDefault = font;
+        return;
+      }
+    }
+  }
+#endif
+  io.FontDefault = io.Fonts->AddFontDefault();
 }
 
 void glfw_drop_callback(GLFWwindow* window, const int count, const char** paths) {
@@ -110,6 +157,7 @@ bool Application::initialize() {
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
   io.ConfigWindowsMoveFromTitleBarOnly = true;
+  configure_ui_font(io);
 
   ImGui::StyleColorsDark();
   ImGuiStyle& style = ImGui::GetStyle();

@@ -1,6 +1,7 @@
 #include "ui/main_window.hpp"
 
 #include "elf_static_view/project.hpp"
+#include "platform/utf8.hpp"
 #include "ui/file_dialogs.hpp"
 #include "ui/filter_matcher.hpp"
 
@@ -28,7 +29,7 @@ bool node_or_descendant_matches(const AppState& state, const ExpandedNode& node)
 }
 
 std::string read_all_text(const std::string& path) {
-  std::ifstream input(path, std::ios::binary);
+  std::ifstream input(platform::utf8_path(path), std::ios::binary);
   if (!input.is_open()) {
     throw std::runtime_error("无法打开文件: " + path);
   }
@@ -38,7 +39,7 @@ std::string read_all_text(const std::string& path) {
 }
 
 void write_all_text(const std::string& path, const std::string& content) {
-  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  std::ofstream output(platform::utf8_path(path), std::ios::binary | std::ios::trunc);
   if (!output.is_open()) {
     throw std::runtime_error("无法写入文件: " + path);
   }
