@@ -1,5 +1,6 @@
 #include "elf_static_view/project.hpp"
 
+#include "analysis/address_bias.hpp"
 #include "analysis/expander.hpp"
 #include "analysis/model_utils.hpp"
 #include "elf/dwarf_reader.hpp"
@@ -130,30 +131,46 @@ std::string render_scan_text(const ProjectModel& model) {
 
 namespace {
 
-void render_expanded_text(const ExpandedNode& node, const int level, std::ostringstream& stream) {
+void render_expanded_text(const ExpandedNode& node,
+                          const int level,
+                          const std::optional<std::int64_t> address_bias,
+                          std::ostringstream& stream) {
   for (int i = 0; i < level; ++i) {
     stream << "  ";
   }
   stream << "- " << node.path << " [" << to_string(node.availability) << "] "
          << node.type_name;
   if (node.absolute_address.has_value()) {
-    stream << " @0x" << std::hex << node.absolute_address.value() << std::dec;
+    if (address_bias.has_value()) {
+      stream << " @" << format_address_summary(node, address_bias.value());
+    } else {
+      stream << " @0x" << std::hex << node.absolute_address.value() << std::dec;
+    }
   }
   stream << '\n';
   for (const auto& child : node.children) {
-    render_expanded_text(child, level + 1, stream);
+    render_expanded_text(child, level + 1, address_bias, stream);
   }
+}
+
+std::string render_dump_text_with_bias(const ProjectModel& model,
+                                       const std::optional<std::int64_t> address_bias) {
+  std::ostringstream stream;
+  stream << "file: " << model.file << '\n';
+  for (const auto& node : model.expanded) {
+    render_expanded_text(node, 0, address_bias, stream);
+  }
+  return stream.str();
 }
 
 }  // namespace
 
 std::string render_dump_text(const ProjectModel& model) {
-  std::ostringstream stream;
-  stream << "file: " << model.file << '\n';
-  for (const auto& node : model.expanded) {
-    render_expanded_text(node, 0, stream);
-  }
-  return stream.str();
+  return render_dump_text_with_bias(model, std::nullopt);
+}
+
+std::string render_dump_text(const ProjectModel& model, const std::int64_t address_bias) {
+  return render_dump_text_with_bias(model, std::optional<std::int64_t>(address_bias));
 }
 
 }  // namespace elf_static_view

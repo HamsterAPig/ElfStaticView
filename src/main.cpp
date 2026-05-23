@@ -1,12 +1,18 @@
+#include "analysis/address_bias.hpp"
 #include "elf_static_view/project.hpp"
 #include "logging/logger.hpp"
 #include "ui/application.hpp"
 
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <optional>
 #include <string>
 #include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace {
 
@@ -18,6 +24,7 @@ struct CliOptions {
   bool only_static_known = false;
   std::optional<std::string> symbol_name;
   std::size_t expand_depth = 8;
+  std::optional<std::int64_t> address_bias;
 };
 
 void print_usage() {
@@ -27,7 +34,7 @@ void print_usage() {
     << "  elf-static-view scan <file> [--show-runtime-only]\n"
     << "  elf-static-view dump <file> [--format text|json] [--show-runtime-only]\n"
     << "                        [--only-static-known] [--symbol <name>]\n"
-    << "                        [--expand-depth <n>]\n";
+    << "                        [--expand-depth <n>] [--address-bias <value>]\n";
 }
 
 CliOptions parse_cli_arguments(const int argc, char** argv) {
@@ -51,20 +58,28 @@ CliOptions parse_cli_arguments(const int argc, char** argv) {
       options.symbol_name = argv[++index];
     } else if (arg == "--expand-depth" && index + 1 < argc) {
       options.expand_depth = static_cast<std::size_t>(std::stoul(argv[++index]));
+    } else if (arg == "--address-bias" && index + 1 < argc) {
+      options.address_bias = elf_static_view::parse_address_bias(argv[++index]);
     } else {
       throw std::runtime_error("未知参数: " + arg);
     }
+  }
+
+  if (options.command != "dump" && options.address_bias.has_value()) {
+    throw std::runtime_error("--address-bias 仅支持 dump 命令");
+  }
+  if (options.format == "json" && options.address_bias.has_value()) {
+    throw std::runtime_error("--address-bias 当前仅支持 dump 的 text 输出");
   }
   return options;
 }
 
 int run_cli(const int argc, char** argv) {
-  const auto options = parse_cli_arguments(argc, argv);
+  const CliOptions options = parse_cli_arguments(argc, argv);
   elf_static_view::ProjectLoader loader;
 
   if (options.command == "scan") {
-    const auto model = loader.scan(options.file,
-                                   {.include_runtime_only = options.show_runtime_only});
+    const auto model = loader.scan(options.file, {.include_runtime_only = options.show_runtime_only});
     std::cout << elf_static_view::render_scan_text(model);
     return 0;
   }
@@ -77,6 +92,8 @@ int run_cli(const int argc, char** argv) {
                                     .expand_depth = options.expand_depth});
     if (options.format == "json") {
       std::cout << elf_static_view::render_dump_json(model);
+    } else if (options.address_bias.has_value()) {
+      std::cout << elf_static_view::render_dump_text(model, options.address_bias.value());
     } else {
       std::cout << elf_static_view::render_dump_text(model);
     }
@@ -87,13 +104,27 @@ int run_cli(const int argc, char** argv) {
 }
 
 int run_ui(const int argc, char** argv) {
-  elf_static_view::ui::UiLaunchOptions options;
+  std::optional<std::string> input_path;
+  bool input_path_is_snapshot = false;
   if (argc >= 3) {
-    options.startup_file = argv[2];
-    options.startup_file_is_snapshot = options.startup_file->ends_with(".json");
+    input_path = argv[2];
+    input_path_is_snapshot = input_path->ends_with(".json");
   }
-  elf_static_view::ui::Application application(std::move(options));
-  return application.run();
+
+  std::filesystem::path executable_path = argv[0];
+#if defined(_WIN32)
+  wchar_t module_path[MAX_PATH] = {};
+  const DWORD module_path_length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+  if (module_path_length > 0 && module_path_length < MAX_PATH) {
+    executable_path = std::filesystem::path(module_path);
+  }
+#endif
+
+  elf_static_view::ui::Application app(
+    {.startup_file = input_path,
+     .executable_path = executable_path,
+     .startup_file_is_snapshot = input_path_is_snapshot});
+  return app.run();
 }
 
 }  // namespace

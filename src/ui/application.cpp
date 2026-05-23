@@ -6,6 +6,7 @@
 #include "ui/file_dialogs.hpp"
 #include "ui/filter_matcher.hpp"
 #include "ui/main_window.hpp"
+#include "ui/version_check.hpp"
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -178,6 +179,11 @@ bool Application::initialize() {
   }
 
   compile_filter_rules(state_.filters);
+  try {
+    load_version_check_config(state_, options_.executable_path);
+  } catch (const std::exception& error) {
+    log_error(state_, error.what());
+  }
   log_info(state_, "UI 初始化完成");
   return true;
 }

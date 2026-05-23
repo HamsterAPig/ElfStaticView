@@ -2,6 +2,7 @@
 
 #include "ui/app_state.hpp"
 
+#include <filesystem>
 #include <optional>
 #include <string>
 
@@ -11,6 +12,7 @@ namespace elf_static_view::ui {
 
 struct UiLaunchOptions {
   std::optional<std::string> startup_file;
+  std::filesystem::path executable_path;
   bool startup_file_is_snapshot = false;
 };
 

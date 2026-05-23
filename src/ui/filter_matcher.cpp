@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <limits>
 #include <sstream>
 
 namespace elf_static_view::ui {
@@ -66,17 +65,18 @@ bool wildcard_match_impl(const std::string& value,
 }
 
 bool wildcard_match(const std::string& value, const std::string& pattern) {
-  return wildcard_match_impl(value, pattern, 0, 0);
+  return wildcard_match_impl(to_lower_copy(value), to_lower_copy(pattern), 0, 0);
 }
 
 bool matches_name_query(const FilterState& state, const ExpandedNode& node) {
   if (state.form.variable_name_query.empty()) {
     return true;
   }
-  const auto query = to_lower_copy(state.form.variable_name_query);
-  const auto display_name = to_lower_copy(node.display_name);
-  const auto path = to_lower_copy(node.path);
-  return display_name.find(query) != std::string::npos || path.find(query) != std::string::npos;
+  const auto lowered_query = to_lower_copy(state.form.variable_name_query);
+  const auto lowered_name = to_lower_copy(node.display_name);
+  const auto lowered_path = to_lower_copy(node.path);
+  return lowered_name.find(lowered_query) != std::string::npos ||
+         lowered_path.find(lowered_query) != std::string::npos;
 }
 
 bool matches_path_rules(const FilterState& state, const ExpandedNode& node) {
@@ -84,8 +84,8 @@ bool matches_path_rules(const FilterState& state, const ExpandedNode& node) {
     return true;
   }
 
-  bool included = false;
   bool has_include_rule = false;
+  bool included = false;
   for (const auto& rule : state.rules) {
     if (!rule.exclude) {
       has_include_rule = true;
@@ -94,12 +94,14 @@ bool matches_path_rules(const FilterState& state, const ExpandedNode& node) {
       }
     }
   }
+
   if (!has_include_rule) {
     included = true;
   }
   if (!included) {
     return false;
   }
+
   for (const auto& rule : state.rules) {
     if (rule.exclude && wildcard_match(node.path, rule.normalized_pattern)) {
       return false;
@@ -117,16 +119,17 @@ void compile_filter_rules(FilterState& state) {
   std::istringstream lines(state.form.path_rules_text);
   std::string line;
   while (std::getline(lines, line)) {
-    const auto trimmed = trim(line);
+    const std::string trimmed = trim(line);
     if (trimmed.empty() || trimmed.starts_with('#')) {
       continue;
     }
+
     FilterRule rule;
     rule.exclude = trimmed.starts_with('!');
     rule.raw_pattern = trimmed;
     rule.normalized_pattern = rule.exclude ? trim(trimmed.substr(1)) : trimmed;
     if (rule.normalized_pattern.empty()) {
-      state.compile_error = "路径规则不能为空";
+      state.compile_error = "路径规则中的排除模式不能为空";
       state.rules.clear();
       return;
     }
@@ -142,66 +145,10 @@ bool matches_filters(const AppState& state, const ExpandedNode& node) {
     return false;
   }
   if (!state.filters.form.include_runtime_only &&
-      (node.availability == Availability::RuntimeOnly ||
-       node.availability == Availability::Unavailable ||
-       node.availability == Availability::OptimizedOut)) {
+      (node.availability == Availability::RuntimeOnly || node.availability == Availability::OptimizedOut)) {
     return false;
   }
   return matches_name_query(state.filters, node) && matches_path_rules(state.filters, node);
-}
-
-std::optional<std::uint64_t> apply_bias_to_absolute(const ExpandedNode& node, const std::int64_t bias) {
-  if (!node.absolute_address.has_value()) {
-    return std::nullopt;
-  }
-  const auto base = node.absolute_address.value();
-  if (bias >= 0) {
-    const auto positive_bias = static_cast<std::uint64_t>(bias);
-    if (base > std::numeric_limits<std::uint64_t>::max() - positive_bias) {
-      return std::nullopt;
-    }
-    return base + positive_bias;
-  }
-
-  // 绝对地址本身是无符号值，负偏移需要按无符号范围单独检查，避免高地址先转成 int64_t 溢出。
-  const auto negative_bias = static_cast<std::uint64_t>(-(bias + 1)) + 1;
-  if (base < negative_bias) {
-    return std::nullopt;
-  }
-  return base - negative_bias;
-}
-
-std::optional<std::int64_t> apply_bias_to_relative(const ExpandedNode& node, const std::int64_t bias) {
-  if (!node.relative_offset.has_value()) {
-    return std::nullopt;
-  }
-  if ((bias > 0 && node.relative_offset.value() > std::numeric_limits<std::int64_t>::max() - bias) ||
-      (bias < 0 && node.relative_offset.value() < std::numeric_limits<std::int64_t>::min() - bias)) {
-    return std::nullopt;
-  }
-  return node.relative_offset.value() + bias;
-}
-
-std::string format_address_summary(const ExpandedNode& node, const std::int64_t bias) {
-  std::ostringstream stream;
-  if (const auto absolute = apply_bias_to_absolute(node, bias); absolute.has_value()) {
-    stream << "0x" << std::hex << absolute.value() << std::dec;
-    return stream.str();
-  }
-  if (const auto relative = apply_bias_to_relative(node, bias); relative.has_value()) {
-    stream << relative.value();
-    return stream.str();
-  }
-  if (node.availability == Availability::RuntimeOnly) {
-    return "runtime";
-  }
-  return "n/a";
-}
-
-std::string format_bias_value(const std::int64_t bias) {
-  std::ostringstream stream;
-  stream << bias << " (0x" << std::hex << bias << std::dec << ')';
-  return stream.str();
 }
 
 }  // namespace elf_static_view::ui

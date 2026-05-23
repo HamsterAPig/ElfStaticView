@@ -33,6 +33,14 @@ struct FilterState {
   std::optional<std::string> compile_error;
 };
 
+struct VersionCheckState {
+  std::string check_uri;
+  std::string latest_version;
+  std::string release_url;
+  std::string message;
+  bool has_new_version = false;
+};
+
 struct AppState {
   LoadedContentKind loaded_kind = LoadedContentKind::None;
   std::string current_file_path;
@@ -42,10 +50,15 @@ struct AppState {
   const ExpandedNode* selected_node = nullptr;
   FilterState filters;
   std::int64_t address_bias = 0;
+  std::string address_bias_input = "0";
+  std::optional<std::string> address_bias_error;
   bool show_log_panel = true;
   bool show_json_preview_panel = true;
   bool show_about_dialog = false;
+  bool show_shortcuts_dialog = false;
   bool request_exit = false;
+  bool focus_variable_search = false;
+  std::optional<VersionCheckState> version_check;
   std::vector<std::string> log_messages;
   std::string error_message;
 };

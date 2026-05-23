@@ -19,6 +19,7 @@ public:
 [[nodiscard]] ProjectSummary summarize(const ProjectModel& model);
 [[nodiscard]] std::string render_scan_text(const ProjectModel& model);
 [[nodiscard]] std::string render_dump_text(const ProjectModel& model);
+[[nodiscard]] std::string render_dump_text(const ProjectModel& model, std::int64_t address_bias);
 [[nodiscard]] std::string render_dump_json(const ProjectModel& model);
 [[nodiscard]] ProjectModel parse_dump_json(const std::string& json_text);
 [[nodiscard]] std::string render_snapshot_json(const ProjectSnapshot& snapshot);

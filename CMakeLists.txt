@@ -43,6 +43,7 @@ target_compile_options(
 )
 
 add_library(elf_static_view_core
+  src/analysis/address_bias.cpp
   src/analysis/expander.cpp
   src/analysis/model_json.cpp
   src/analysis/model_utils.cpp
@@ -131,6 +132,7 @@ add_executable(
   src/ui/application.cpp
   src/ui/file_dialogs.cpp
   src/ui/main_window.cpp
+  src/ui/version_check.cpp
 )
 
 target_include_directories(
@@ -145,11 +147,18 @@ target_link_libraries(
     elf_static_view_core
     elf_static_view_ui_support
     elf_static_view_imgui
+    yaml-cpp::yaml-cpp
     elf_static_view_warnings
 )
 
+target_compile_definitions(
+  elf-static-view
+  PRIVATE
+    ELF_STATIC_VIEW_VERSION="${PROJECT_VERSION}"
+)
+
 if(WIN32)
-  target_link_libraries(elf-static-view PRIVATE comdlg32)
+  target_link_libraries(elf-static-view PRIVATE comdlg32 winhttp)
 endif()
 
 if(ELF_STATIC_VIEW_BUILD_TESTS)

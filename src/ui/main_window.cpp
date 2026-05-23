@@ -1,15 +1,19 @@
 #include "ui/main_window.hpp"
 
+#include "analysis/address_bias.hpp"
 #include "elf_static_view/project.hpp"
 #include "platform/utf8.hpp"
 #include "ui/file_dialogs.hpp"
 #include "ui/filter_matcher.hpp"
+#include "ui/version_check.hpp"
 
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <misc/cpp/imgui_stdlib.h>
 
 #include <fstream>
+#include <cstdint>
+#include <limits>
 #include <sstream>
 #include <stdexcept>
 
@@ -22,6 +26,7 @@ constexpr char kVariablesWindowName[] = "Variables";
 constexpr char kInspectorWindowName[] = "Inspector";
 constexpr char kLogWindowName[] = "Log";
 constexpr char kJsonPreviewWindowName[] = "JSON Preview";
+constexpr char kVariableSearchInputId[] = "##variable_name_query";
 
 void setup_default_dock_layout(ImGuiID dockspace_id,
                                const ImGuiViewport* viewport,
@@ -61,6 +66,65 @@ bool node_or_descendant_matches(const AppState& state, const ExpandedNode& node)
   return false;
 }
 
+std::optional<std::string> format_selected_address_minus_bias(const AppState& state) {
+  if (state.selected_node == nullptr) {
+    return std::nullopt;
+  }
+  if (!state.selected_node->absolute_address.has_value()) {
+    return std::nullopt;
+  }
+
+  const auto absolute_address = state.selected_node->absolute_address.value();
+  if (state.address_bias < 0) {
+    const auto magnitude = static_cast<std::uint64_t>(-(state.address_bias + 1)) + 1U;
+    if (absolute_address > std::numeric_limits<std::uint64_t>::max() - magnitude) {
+      return std::nullopt;
+    }
+  } else if (absolute_address < static_cast<std::uint64_t>(state.address_bias)) {
+    return std::nullopt;
+  }
+
+  const std::uint64_t adjusted =
+    state.address_bias < 0
+      ? absolute_address + (static_cast<std::uint64_t>(-(state.address_bias + 1)) + 1U)
+      : absolute_address - static_cast<std::uint64_t>(state.address_bias);
+  std::ostringstream stream;
+  stream << "0x" << std::hex << adjusted;
+  return stream.str();
+}
+
+void copy_selected_address_minus_bias(AppState& state) {
+  const auto address = format_selected_address_minus_bias(state);
+  if (!address.has_value()) {
+    log_error(state, "当前变量没有可复制的地址减偏移结果");
+    return;
+  }
+  ImGui::SetClipboardText(address->c_str());
+  log_info(state, "已复制当前变量地址减偏移结果: " + address.value());
+}
+
+void handle_global_shortcuts(AppState& state) {
+  const ImGuiIO& io = ImGui::GetIO();
+  if (io.WantTextInput) {
+    return;
+  }
+
+  // 这里集中处理全局快捷键，避免每个面板自行抢键盘焦点。
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F)) {
+    state.focus_variable_search = true;
+  }
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C)) {
+    copy_selected_address_minus_bias(state);
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+    state.show_shortcuts_dialog = true;
+  }
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+    state.focus_variable_search = false;
+    ImGui::ClearActiveID();
+  }
+}
+
 std::string read_all_text(const std::string& path) {
   std::ifstream input(platform::utf8_path(path), std::ios::binary);
   if (!input.is_open()) {
@@ -89,7 +153,8 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
                      ((state.selected_node == &node) ? ImGuiTreeNodeFlags_Selected : 0);
 
   const auto label =
-    node.display_name + " [" + node.type_name + "] @ " + format_address_summary(node, state.address_bias);
+    node.display_name + " [" + node.type_name + "] @ " +
+    elf_static_view::format_address_summary(node, state.address_bias);
   const bool opened = ImGui::TreeNodeEx(static_cast<const void*>(&node), flags, "%s", label.c_str());
   if (ImGui::IsItemClicked()) {
     state.selected_node = &node;
@@ -106,7 +171,8 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
         ImGui::SetClipboardText(stream.str().c_str());
       }
     }
-    if (const auto adjusted = apply_bias_to_absolute(node, state.address_bias); adjusted.has_value()) {
+    if (const auto adjusted = elf_static_view::apply_bias_to_absolute(node, state.address_bias);
+        adjusted.has_value()) {
       std::ostringstream stream;
       stream << "0x" << std::hex << adjusted.value();
       if (ImGui::MenuItem("复制偏移后地址")) {
@@ -217,7 +283,24 @@ void render_menu_bar(AppState& state) {
     ImGui::EndMenu();
   }
 
+  if (ImGui::BeginMenu("Tools")) {
+    if (ImGui::MenuItem("Check for Updates")) {
+      try {
+        check_for_new_version(state);
+      } catch (const std::exception& error) {
+        log_error(state, error.what());
+      }
+    }
+    if (state.version_check.has_value() && !state.version_check->message.empty()) {
+      ImGui::TextDisabled("%s", state.version_check->message.c_str());
+    }
+    ImGui::EndMenu();
+  }
+
   if (ImGui::BeginMenu("Help")) {
+    if (ImGui::MenuItem("Keyboard Shortcuts", "F1")) {
+      state.show_shortcuts_dialog = true;
+    }
     if (ImGui::MenuItem("About")) {
       state.show_about_dialog = true;
     }
@@ -230,7 +313,11 @@ void render_menu_bar(AppState& state) {
 void render_filters(AppState& state) {
   ImGui::TextUnformatted("变量名搜索");
   ImGui::SetNextItemWidth(-1.0F);
-  if (ImGui::InputTextWithHint("##variable_name_query",
+  if (state.focus_variable_search) {
+    ImGui::SetKeyboardFocusHere();
+    state.focus_variable_search = false;
+  }
+  if (ImGui::InputTextWithHint(kVariableSearchInputId,
                                "匹配变量名或完整路径中的子串",
                                &state.filters.form.variable_name_query)) {
     compile_filter_rules(state.filters);
@@ -252,8 +339,18 @@ void render_filters(AppState& state) {
   if (ImGui::Checkbox("仅静态地址可知", &state.filters.form.only_static_known)) {
     compile_filter_rules(state.filters);
   }
-  ImGui::InputScalar("地址偏移", ImGuiDataType_S64, &state.address_bias);
-  ImGui::TextUnformatted(format_bias_value(state.address_bias).c_str());
+  if (ImGui::InputText("地址偏移", &state.address_bias_input)) {
+    try {
+      state.address_bias = elf_static_view::parse_address_bias(state.address_bias_input);
+      state.address_bias_error.reset();
+    } catch (const std::exception& error) {
+      state.address_bias_error = error.what();
+    }
+  }
+  ImGui::TextUnformatted(elf_static_view::format_bias_value(state.address_bias).c_str());
+  if (state.address_bias_error.has_value()) {
+    ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.45F, 1.0F), "%s", state.address_bias_error->c_str());
+  }
   if (state.filters.compile_error.has_value()) {
     ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.45F, 1.0F), "%s", state.filters.compile_error->c_str());
   }
@@ -297,8 +394,9 @@ void render_inspector_panel(AppState& state) {
   ImGui::Text("Type: %s", node.type_name.c_str());
   ImGui::Text("Type Kind: %s", to_string(node.type_kind).c_str());
   ImGui::Text("Availability: %s", to_string(node.availability).c_str());
-  ImGui::Text("Raw Address: %s", format_address_summary(node, 0).c_str());
-  ImGui::Text("Biased Address: %s", format_address_summary(node, state.address_bias).c_str());
+  ImGui::Text("Raw Address: %s", elf_static_view::format_address_summary(node, 0).c_str());
+  ImGui::Text(
+    "Biased Address: %s", elf_static_view::format_address_summary(node, state.address_bias).c_str());
   if (node.byte_size.has_value()) {
     ImGui::Text("Byte Size: %llu", static_cast<unsigned long long>(node.byte_size.value()));
   }
@@ -377,6 +475,30 @@ void render_about_dialog(AppState& state) {
   }
 }
 
+void render_shortcuts_dialog(AppState& state) {
+  if (!state.show_shortcuts_dialog) {
+    return;
+  }
+  ImGui::OpenPopup("Keyboard Shortcuts");
+  if (ImGui::BeginPopupModal("Keyboard Shortcuts",
+                             &state.show_shortcuts_dialog,
+                             ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::TextUnformatted("Keyboard Shortcuts");
+    ImGui::Separator();
+    ImGui::BulletText("Ctrl+F: 聚焦变量名搜索框");
+    ImGui::BulletText("Ctrl+C: 复制当前变量地址减去地址偏移后的结果");
+    ImGui::BulletText("F1: 打开快捷键帮助");
+    ImGui::BulletText("Esc: 清理当前输入焦点");
+    ImGui::Separator();
+    ImGui::TextWrapped("版本检查 URI 来自可执行程序同目录的 elf-static-view.yaml，字段为 updates.check_uri。");
+    if (ImGui::Button("Close")) {
+      state.show_shortcuts_dialog = false;
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::EndPopup();
+  }
+}
+
 }  // namespace
 
 void MainWindow::render(AppState& state) {
@@ -384,6 +506,7 @@ void MainWindow::render(AppState& state) {
   const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
   const ImGuiID dockspace_id = ImGui::GetID(kMainDockspaceName);
 
+  handle_global_shortcuts(state);
   render_menu_bar(state);
   ImGui::DockSpaceOverViewport(dockspace_id, main_viewport, kDockspaceFlags);
   setup_default_dock_layout(dockspace_id, main_viewport, kDockspaceFlags);
@@ -391,6 +514,7 @@ void MainWindow::render(AppState& state) {
   render_inspector_panel(state);
   render_log_panel(state);
   render_json_preview_panel(state);
+  render_shortcuts_dialog(state);
   render_about_dialog(state);
 }
 
