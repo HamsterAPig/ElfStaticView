@@ -1,0 +1,7 @@
+"name": "global_struct"
+"path": "global_struct.inner.value"
+"path": "global_array[0]"
+"path": "global_array[1]"
+"path": "matrix[1]"
+"availability": "RuntimeOnly"
+"name": "function_static_value"
