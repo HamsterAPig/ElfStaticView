@@ -178,6 +178,45 @@ void verify_address_bias_parsing() {
   expect_parse_failure("-0x8000000000000001", "超过 int64 负向范围应被拒绝");
 }
 
+void verify_copy_address_formatting() {
+  elf_static_view::ui::AppState state;
+  expect_true(elf_static_view::ui::format_address_for_copy(0x1234U, state) == "0x1234",
+              "默认复制格式应为带 0x 前缀的十六进制");
+
+  state.copy_hex_without_prefix = true;
+  expect_true(elf_static_view::ui::format_address_for_copy(0x1234U, state) == "1234",
+              "启用前缀移除后，十六进制复制结果不应带 0x");
+
+  state.copy_address_base = elf_static_view::ui::CopyAddressBase::Dec;
+  expect_true(elf_static_view::ui::format_address_for_copy(0x1234U, state) == "4660",
+              "十进制复制结果不正确");
+
+  state.copy_address_base = elf_static_view::ui::CopyAddressBase::Oct;
+  expect_true(elf_static_view::ui::format_address_for_copy(0x1234U, state) == "11064",
+              "八进制复制结果不正确");
+
+  state.copy_address_base = elf_static_view::ui::CopyAddressBase::Bin;
+  expect_true(elf_static_view::ui::format_address_for_copy(0x1234U, state) == "1001000110100",
+              "二进制复制结果不正确");
+}
+
+void verify_window_title_formatting() {
+  elf_static_view::ui::AppState state;
+  expect_true(elf_static_view::ui::build_window_title(state) ==
+                "ElfStaticView " + elf_static_view::ui::current_version_string(),
+              "未加载文件时应显示默认标题");
+
+  state.current_file_path = "workspace/demo/build/bin/app.elf";
+  expect_true(elf_static_view::ui::build_window_title(state) ==
+                "ElfStaticView - .../build/bin/app.elf",
+              "ELF 文件标题应显示缩写路径和文件名");
+
+  state.current_snapshot_path = "snapshots/run/app.snapshot.json";
+  expect_true(elf_static_view::ui::build_window_title(state) ==
+                "ElfStaticView - snapshots/run/app.snapshot.json",
+              "快照标题应优先显示当前打开的快照路径");
+}
+
 void verify_utf8_path_helpers() {
 #if defined(_WIN32)
   constexpr auto sample_literal = u8"中文/静态变量.json";
@@ -436,6 +475,8 @@ void verify_ui_config_round_trip() {
   first_state.persist_address_bias_to_config = true;
   first_state.address_bias_input = "0x123";
   first_state.address_bias = elf_static_view::parse_address_bias(first_state.address_bias_input);
+  first_state.copy_address_base = elf_static_view::ui::CopyAddressBase::Bin;
+  first_state.copy_hex_without_prefix = true;
   first_state.version_check = elf_static_view::ui::VersionCheckState {
     .repository_url = "https://example.com/project",
     .check_uri = "https://example.com/releases.yaml",
@@ -457,6 +498,10 @@ void verify_ui_config_round_trip() {
               "地址偏移数值应当从配置文件恢复");
   expect_true(restored_state.address_bias_input == "0x123",
               "地址偏移输入框文本应当从配置文件恢复");
+  expect_true(restored_state.copy_address_base == elf_static_view::ui::CopyAddressBase::Bin,
+              "复制进制应当从配置文件恢复");
+  expect_true(restored_state.copy_hex_without_prefix,
+              "十六进制复制前缀设置应当从配置文件恢复");
   expect_true(restored_state.version_check.has_value(),
               "版本检查 URI 应当从配置文件恢复");
   expect_true(restored_state.version_check->repository_url == "https://example.com/project",
@@ -476,6 +521,10 @@ void verify_ui_config_round_trip() {
   expect_true(disabled_state.address_bias == 0, "关闭地址偏移写回后，不应恢复旧地址偏移");
   expect_true(disabled_state.address_bias_input == "0",
               "关闭地址偏移写回后，地址偏移输入应保持默认值");
+  expect_true(disabled_state.copy_address_base == elf_static_view::ui::CopyAddressBase::Bin,
+              "关闭地址偏移写回不应影响复制进制恢复");
+  expect_true(disabled_state.copy_hex_without_prefix,
+              "关闭地址偏移写回不应影响十六进制复制前缀设置");
 
   std::filesystem::remove_all(temp_root);
 }
@@ -560,6 +609,8 @@ int main() {
     verify_filter_rules();
     verify_address_bias();
     verify_address_bias_parsing();
+    verify_copy_address_formatting();
+    verify_window_title_formatting();
     verify_utf8_path_helpers();
     verify_elf_symbol_table_endian_matrix();
     verify_ui_config_round_trip();

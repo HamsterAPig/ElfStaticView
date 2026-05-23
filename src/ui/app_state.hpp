@@ -3,8 +3,10 @@
 #include "elf_static_view/project.hpp"
 
 #include <filesystem>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace elf_static_view::ui {
@@ -46,6 +48,13 @@ struct VersionCheckState {
   bool check_uri_uses_default = false;
 };
 
+enum class CopyAddressBase {
+  Hex,
+  Dec,
+  Oct,
+  Bin,
+};
+
 struct AppState {
   LoadedContentKind loaded_kind = LoadedContentKind::None;
   std::string current_file_path;
@@ -58,7 +67,10 @@ struct AppState {
   std::string address_bias_input = "0";
   std::optional<std::string> address_bias_error;
   std::filesystem::path config_path;
+  CopyAddressBase copy_address_base = CopyAddressBase::Hex;
+  bool copy_hex_without_prefix = false;
   bool persist_address_bias_to_config = false;
+  bool window_title_dirty = false;
   bool show_log_panel = true;
   bool show_json_preview_panel = true;
   bool show_about_dialog = false;
@@ -72,7 +84,12 @@ struct AppState {
 
 void log_info(AppState& state, const std::string& message);
 void log_error(AppState& state, const std::string& message);
+[[nodiscard]] const char* copy_address_base_label(CopyAddressBase value);
+[[nodiscard]] std::optional<CopyAddressBase> parse_copy_address_base(std::string_view value);
+[[nodiscard]] std::string copy_address_base_to_config_value(CopyAddressBase value);
 void clear_selection(AppState& state);
+[[nodiscard]] std::string format_address_for_copy(std::uint64_t value, const AppState& state);
+[[nodiscard]] std::string build_window_title(const AppState& state);
 void set_loaded_project(AppState& state,
                         ProjectModel model,
                         LoadedContentKind kind,

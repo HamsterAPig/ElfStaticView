@@ -412,6 +412,18 @@ void load_app_config(AppState& state, const std::filesystem::path& executable_pa
     log_info(state, "未配置 updates.repository_url，About 将显示默认 GitHub 仓库地址。");
   }
 
+  const YAML::Node copy = root["copy"];
+  state.copy_hex_without_prefix = read_yaml_bool(copy, "strip_hex_prefix", false);
+  const std::string stored_copy_address_base = read_yaml_scalar(copy, "address_base");
+  if (!stored_copy_address_base.empty()) {
+    if (const auto parsed = parse_copy_address_base(stored_copy_address_base); parsed.has_value()) {
+      state.copy_address_base = parsed.value();
+      log_info(state, "复制进制已加载: " + std::string(copy_address_base_label(parsed.value())));
+    } else {
+      log_error(state, "配置文件中的 copy.address_base 无效: " + stored_copy_address_base);
+    }
+  }
+
   const YAML::Node address_bias = root["address_bias"];
   state.persist_address_bias_to_config = read_yaml_bool(address_bias, "write_back", false);
   if (!state.persist_address_bias_to_config) {
@@ -448,6 +460,8 @@ void save_app_config(const AppState& state) {
       root["updates"]["repository_url"] = state.version_check->repository_url;
     }
   }
+  root["copy"]["address_base"] = copy_address_base_to_config_value(state.copy_address_base);
+  root["copy"]["strip_hex_prefix"] = state.copy_hex_without_prefix;
 
   YAML::Node address_bias = root["address_bias"];
   address_bias["write_back"] = state.persist_address_bias_to_config;

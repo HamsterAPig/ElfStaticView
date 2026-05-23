@@ -29,6 +29,12 @@ constexpr char kJsonPreviewWindowName[] = "JSON 预览###JSON Preview";
 constexpr char kVariableSearchInputId[] = "##variable_name_query";
 constexpr char kAboutDialogName[] = "关于 ElfStaticView###about_dialog";
 constexpr char kShortcutsDialogName[] = "快捷键说明###shortcuts_dialog";
+constexpr CopyAddressBase kCopyAddressBaseOptions[] = {
+  CopyAddressBase::Hex,
+  CopyAddressBase::Dec,
+  CopyAddressBase::Oct,
+  CopyAddressBase::Bin,
+};
 
 const char* localized_type_kind(const TypeKind value) {
   switch (value) {
@@ -127,6 +133,14 @@ std::string build_log_panel_text(const AppState& state) {
   return text;
 }
 
+void save_app_config_or_log(AppState& state) {
+  try {
+    save_app_config(state);
+  } catch (const std::exception& error) {
+    log_error(state, error.what());
+  }
+}
+
 std::optional<std::string> format_selected_address_minus_bias(const AppState& state) {
   if (state.selected_node == nullptr) {
     return std::nullopt;
@@ -149,18 +163,14 @@ std::optional<std::string> format_selected_address_minus_bias(const AppState& st
     state.address_bias < 0
       ? absolute_address + (static_cast<std::uint64_t>(-(state.address_bias + 1)) + 1U)
       : absolute_address - static_cast<std::uint64_t>(state.address_bias);
-  std::ostringstream stream;
-  stream << "0x" << std::hex << adjusted;
-  return stream.str();
+  return format_address_for_copy(adjusted, state);
 }
 
 std::optional<std::string> format_selected_raw_address(const AppState& state) {
   if (state.selected_node == nullptr || !state.selected_node->absolute_address.has_value()) {
     return std::nullopt;
   }
-  std::ostringstream stream;
-  stream << "0x" << std::hex << state.selected_node->absolute_address.value();
-  return stream.str();
+  return format_address_for_copy(state.selected_node->absolute_address.value(), state);
 }
 
 void copy_selected_address_minus_bias(AppState& state) {
@@ -252,10 +262,10 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
     }
     if (const auto adjusted = elf_static_view::apply_bias_to_absolute(node, state.address_bias);
         adjusted.has_value()) {
-      std::ostringstream stream;
-      stream << "0x" << std::hex << adjusted.value();
       if (ImGui::MenuItem("复制偏移后地址")) {
-        ImGui::SetClipboardText(stream.str().c_str());
+        const std::string copied_text = format_address_for_copy(adjusted.value(), state);
+        ImGui::SetClipboardText(copied_text.c_str());
+        log_info(state, "已复制当前变量偏移后地址: " + copied_text);
       }
     }
     if (node.relative_offset.has_value()) {
@@ -423,23 +433,41 @@ void render_filters(AppState& state) {
       state.address_bias = elf_static_view::parse_address_bias(state.address_bias_input);
       state.address_bias_error.reset();
       if (state.persist_address_bias_to_config) {
-        save_app_config(state);
+        save_app_config_or_log(state);
       }
     } catch (const std::exception& error) {
       state.address_bias_error = error.what();
     }
   }
   if (ImGui::Checkbox("将地址偏移写回配置文件", &state.persist_address_bias_to_config)) {
-    try {
-      save_app_config(state);
-      log_info(state,
-               state.persist_address_bias_to_config
-                 ? "已启用地址偏移写回配置文件"
-                 : "已禁用地址偏移写回配置文件");
-    } catch (const std::exception& error) {
-      state.persist_address_bias_to_config = !state.persist_address_bias_to_config;
-      log_error(state, error.what());
+    save_app_config_or_log(state);
+    log_info(state,
+             state.persist_address_bias_to_config
+               ? "已启用地址偏移写回配置文件"
+               : "已禁用地址偏移写回配置文件");
+  }
+  if (ImGui::BeginCombo("复制进制", copy_address_base_label(state.copy_address_base))) {
+    for (const CopyAddressBase candidate : kCopyAddressBaseOptions) {
+      const bool selected = candidate == state.copy_address_base;
+      if (ImGui::Selectable(copy_address_base_label(candidate), selected)) {
+        state.copy_address_base = candidate;
+        save_app_config_or_log(state);
+      }
+      if (selected) {
+        ImGui::SetItemDefaultFocus();
+      }
     }
+    ImGui::EndCombo();
+  }
+  const bool enable_hex_prefix_toggle = state.copy_address_base == CopyAddressBase::Hex;
+  if (!enable_hex_prefix_toggle) {
+    ImGui::BeginDisabled();
+  }
+  if (ImGui::Checkbox("复制十六进制时移除 0x 前缀", &state.copy_hex_without_prefix)) {
+    save_app_config_or_log(state);
+  }
+  if (!enable_hex_prefix_toggle) {
+    ImGui::EndDisabled();
   }
   ImGui::TextUnformatted(elf_static_view::format_bias_value(state.address_bias).c_str());
   if (state.address_bias_error.has_value()) {

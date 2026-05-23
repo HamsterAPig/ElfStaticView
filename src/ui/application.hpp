@@ -31,6 +31,7 @@ private:
   void shutdown();
   void load_startup_content();
   void load_file_into_state(const std::string& path);
+  void refresh_window_title();
   void queue_ui_scale(float x_scale, float y_scale);
   void apply_pending_ui_scale();
   void render_frame();

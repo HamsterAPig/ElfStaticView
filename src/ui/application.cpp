@@ -261,6 +261,10 @@ void Application::load_startup_content() {
   } catch (const std::exception& error) {
     log_error(state_, error.what());
   }
+
+  if (state_.window_title_dirty) {
+    refresh_window_title();
+  }
 }
 
 void Application::load_file_into_state(const std::string& path) {
@@ -281,6 +285,16 @@ void Application::load_file_into_state(const std::string& path) {
                      LoadedContentKind::ElfProject,
                      path);
   log_info(state_, "已分析文件: " + path);
+}
+
+void Application::refresh_window_title() {
+  if (window_ == nullptr) {
+    return;
+  }
+
+  const std::string title = build_window_title(state_);
+  glfwSetWindowTitle(window_, title.c_str());
+  state_.window_title_dirty = false;
 }
 
 void Application::queue_ui_scale(const float x_scale, const float y_scale) {
@@ -315,6 +329,9 @@ void Application::render_frame() {
 
   MainWindow window;
   window.render(state_);
+  if (state_.window_title_dirty) {
+    refresh_window_title();
+  }
   if (state_.request_exit) {
     glfwSetWindowShouldClose(window_, GLFW_TRUE);
   }
