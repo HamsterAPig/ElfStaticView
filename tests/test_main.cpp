@@ -477,6 +477,7 @@ void verify_ui_config_round_trip() {
   first_state.address_bias = elf_static_view::parse_address_bias(first_state.address_bias_input);
   first_state.copy_address_base = elf_static_view::ui::CopyAddressBase::Bin;
   first_state.copy_hex_without_prefix = true;
+  first_state.ui_refresh_rate = 15;
   first_state.version_check = elf_static_view::ui::VersionCheckState {
     .repository_url = "https://example.com/project",
     .check_uri = "https://example.com/releases.yaml",
@@ -502,6 +503,8 @@ void verify_ui_config_round_trip() {
               "复制进制应当从配置文件恢复");
   expect_true(restored_state.copy_hex_without_prefix,
               "十六进制复制前缀设置应当从配置文件恢复");
+  expect_true(restored_state.ui_refresh_rate == 15,
+              "界面刷新率应当从配置文件恢复");
   expect_true(restored_state.version_check.has_value(),
               "版本检查 URI 应当从配置文件恢复");
   expect_true(restored_state.version_check->repository_url == "https://example.com/project",
@@ -525,6 +528,8 @@ void verify_ui_config_round_trip() {
               "关闭地址偏移写回不应影响复制进制恢复");
   expect_true(disabled_state.copy_hex_without_prefix,
               "关闭地址偏移写回不应影响十六进制复制前缀设置");
+  expect_true(disabled_state.ui_refresh_rate == 15,
+              "关闭地址偏移写回不应影响界面刷新率恢复");
 
   std::filesystem::remove_all(temp_root);
 }

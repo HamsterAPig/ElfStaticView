@@ -16,6 +16,10 @@ namespace elf_static_view::ui {
 
 namespace {
 
+constexpr int kDefaultUiRefreshRate = 30;
+constexpr int kMinUiRefreshRate = 1;
+constexpr int kMaxUiRefreshRate = 240;
+
 std::string infer_source_file(const AppState& state) {
   if (!state.current_file_path.empty()) {
     return state.current_file_path;
@@ -189,6 +193,13 @@ std::string copy_address_base_to_config_value(const CopyAddressBase value) {
       return "bin";
   }
   return "hex";
+}
+
+int sanitize_ui_refresh_rate(const int value) {
+  if (value <= 0) {
+    return kDefaultUiRefreshRate;
+  }
+  return std::clamp(value, kMinUiRefreshRate, kMaxUiRefreshRate);
 }
 
 void clear_selection(AppState& state) {

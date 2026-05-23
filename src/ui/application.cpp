@@ -25,6 +25,7 @@
 #include <fstream>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <string_view>
 #include <utility>
 
@@ -142,13 +143,21 @@ int Application::run() {
   }
 
   load_startup_content();
+  auto next_frame_deadline = std::chrono::steady_clock::now();
   while (window_ != nullptr && glfwWindowShouldClose(window_) == 0) {
     if (!needs_redraw_ && !ui_scale_dirty_) {
       // 空闲时阻塞等待事件；一旦收到事件，立刻补一帧把交互结果真正绘制出来。
       glfwWaitEvents();
       needs_redraw_ = true;
     }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < next_frame_deadline) {
+      // 这里统一做 UI 限帧，避免拖动/滚动等高频事件把 ImGui 推到显示器满帧。
+      std::this_thread::sleep_until(next_frame_deadline);
+    }
     render_frame();
+    next_frame_deadline = std::chrono::steady_clock::now() + frame_interval();
   }
   return 0;
 }
@@ -332,6 +341,12 @@ void Application::apply_pending_ui_scale() {
       ImGui::GetIO().BackendRendererUserData != nullptr) {
     ImGui_ImplOpenGL3_DestroyDeviceObjects();
   }
+}
+
+std::chrono::steady_clock::duration Application::frame_interval() const {
+  using namespace std::chrono;
+  return duration_cast<steady_clock::duration>(
+    duration<double>(1.0 / static_cast<double>(sanitize_ui_refresh_rate(state_.ui_refresh_rate))));
 }
 
 void Application::render_frame() {

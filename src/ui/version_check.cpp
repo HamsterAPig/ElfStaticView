@@ -87,6 +87,13 @@ bool read_yaml_bool(const YAML::Node& node, const char* key, const bool default_
   return node[key].as<bool>();
 }
 
+std::optional<int> read_yaml_int(const YAML::Node& node, const char* key) {
+  if (!node || !node[key]) {
+    return std::nullopt;
+  }
+  return node[key].as<int>();
+}
+
 std::string read_text_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input.is_open()) {
@@ -424,6 +431,16 @@ void load_app_config(AppState& state, const std::filesystem::path& executable_pa
     }
   }
 
+  const YAML::Node ui = root["ui"];
+  try {
+    if (const auto stored_refresh_rate = read_yaml_int(ui, "refresh_rate"); stored_refresh_rate.has_value()) {
+      state.ui_refresh_rate = sanitize_ui_refresh_rate(stored_refresh_rate.value());
+      log_info(state, "界面刷新率已加载: " + std::to_string(state.ui_refresh_rate) + " FPS");
+    }
+  } catch (const std::exception& error) {
+    log_error(state, std::string("配置文件中的 ui.refresh_rate 无效: ") + error.what());
+  }
+
   const YAML::Node address_bias = root["address_bias"];
   state.persist_address_bias_to_config = read_yaml_bool(address_bias, "write_back", false);
   if (!state.persist_address_bias_to_config) {
@@ -462,6 +479,7 @@ void save_app_config(const AppState& state) {
   }
   root["copy"]["address_base"] = copy_address_base_to_config_value(state.copy_address_base);
   root["copy"]["strip_hex_prefix"] = state.copy_hex_without_prefix;
+  root["ui"]["refresh_rate"] = sanitize_ui_refresh_rate(state.ui_refresh_rate);
 
   YAML::Node address_bias = root["address_bias"];
   address_bias["write_back"] = state.persist_address_bias_to_config;

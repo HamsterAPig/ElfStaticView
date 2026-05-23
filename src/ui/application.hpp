@@ -3,6 +3,7 @@
 #include "ui/app_state.hpp"
 
 #include <filesystem>
+#include <chrono>
 #include <optional>
 #include <string>
 
@@ -35,6 +36,7 @@ private:
   void request_redraw();
   void queue_ui_scale(float x_scale, float y_scale);
   void apply_pending_ui_scale();
+  [[nodiscard]] std::chrono::steady_clock::duration frame_interval() const;
   void render_frame();
 
   static void glfw_drop_callback(GLFWwindow* window, int count, const char** paths);
