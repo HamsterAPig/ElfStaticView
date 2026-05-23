@@ -114,6 +114,19 @@ bool node_or_descendant_matches(const AppState& state, const ExpandedNode& node)
   return false;
 }
 
+std::string build_log_panel_text(const AppState& state) {
+  std::string text;
+  for (const auto& line : state.log_messages) {
+    text.append(line);
+    text.push_back('\n');
+  }
+  if (!state.error_message.empty()) {
+    text.append("当前错误: ");
+    text.append(state.error_message);
+  }
+  return text;
+}
+
 std::optional<std::string> format_selected_address_minus_bias(const AppState& state) {
   if (state.selected_node == nullptr) {
     return std::nullopt;
@@ -498,13 +511,15 @@ void render_log_panel(AppState& state) {
     ImGui::End();
     return;
   }
-  for (const auto& line : state.log_messages) {
-    ImGui::TextWrapped("%s", line.c_str());
+  // 日志面板改成只读多行输入框，这样用户可以自由框选、复制任意片段。
+  std::string log_text = build_log_panel_text(state);
+  if (log_text.empty()) {
+    log_text = "暂无日志。";
   }
-  if (!state.error_message.empty()) {
-    ImGui::Separator();
-    ImGui::TextColored(ImVec4(1.0F, 0.45F, 0.45F, 1.0F), "%s", state.error_message.c_str());
-  }
+  ImGui::InputTextMultiline("##log_panel_text",
+                            &log_text,
+                            ImVec2(-FLT_MIN, -FLT_MIN),
+                            ImGuiInputTextFlags_ReadOnly);
   ImGui::End();
 }
 
