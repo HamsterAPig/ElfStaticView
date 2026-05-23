@@ -22,10 +22,10 @@ namespace elf_static_view::ui {
 namespace {
 
 constexpr char kMainDockspaceName[] = "MainDockSpace";
-constexpr char kVariablesWindowName[] = "变量###variables_window";
-constexpr char kInspectorWindowName[] = "详情###inspector_window";
-constexpr char kLogWindowName[] = "日志###log_window";
-constexpr char kJsonPreviewWindowName[] = "JSON 预览###json_preview_window";
+constexpr char kVariablesWindowName[] = "变量###Variables";
+constexpr char kInspectorWindowName[] = "详情###Inspector";
+constexpr char kLogWindowName[] = "日志###Log";
+constexpr char kJsonPreviewWindowName[] = "JSON 预览###JSON Preview";
 constexpr char kVariableSearchInputId[] = "##variable_name_query";
 constexpr char kAboutDialogName[] = "关于 ElfStaticView###about_dialog";
 constexpr char kShortcutsDialogName[] = "快捷键说明###shortcuts_dialog";
