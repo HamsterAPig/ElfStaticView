@@ -1,0 +1,90 @@
+name: Windows Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build And Publish Windows Release
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Show Tool Versions
+        shell: pwsh
+        run: |
+          cmake --version
+          git --version
+          clang --version
+
+      - name: Configure CMake
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Release Targets
+        shell: pwsh
+        run: cmake --build build --config Release
+
+      - name: Run Tests
+        shell: pwsh
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Package Release Bundle
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $distDir = Join-Path $PWD "dist"
+          $bundleDir = Join-Path $distDir "ElfStaticView-$tag-windows-x64"
+          $releaseDir = Join-Path $PWD "build\Release"
+          $assetPath = Join-Path $distDir "ElfStaticView-$tag-windows-x64.zip"
+
+          if (Test-Path $bundleDir) {
+            Remove-Item -LiteralPath $bundleDir -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
+          Copy-Item -LiteralPath (Join-Path $releaseDir "elf-static-view.exe") -Destination $bundleDir
+          Copy-Item -LiteralPath (Join-Path $releaseDir "elf-static-view-cli.exe") -Destination $bundleDir
+
+          $pdbFiles = @(
+            Join-Path $releaseDir "elf-static-view.pdb"
+            Join-Path $releaseDir "elf-static-view-cli.pdb"
+          )
+          foreach ($pdb in $pdbFiles) {
+            if (Test-Path $pdb) {
+              Copy-Item -LiteralPath $pdb -Destination $bundleDir
+            }
+          }
+
+          if (Test-Path $assetPath) {
+            Remove-Item -LiteralPath $assetPath -Force
+          }
+
+          Compress-Archive -Path (Join-Path $bundleDir "*") -DestinationPath $assetPath
+
+      - name: Upload Release Bundle Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-bundle
+          path: dist/ElfStaticView-${{ github.ref_name }}-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ElfStaticView-${{ github.ref_name }}-windows-x64.zip
+          generate_release_notes: true
