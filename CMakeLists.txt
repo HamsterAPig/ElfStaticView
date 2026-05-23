@@ -10,6 +10,44 @@ project(
 include(CTest)
 include(FetchContent)
 
+find_package(Git QUIET)
+
+set(ELF_STATIC_VIEW_VERSION_STRING "${PROJECT_VERSION}")
+if(GIT_FOUND)
+  execute_process(
+    COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" describe --tags --exact-match HEAD
+    OUTPUT_VARIABLE ELF_STATIC_VIEW_GIT_TAG
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    RESULT_VARIABLE ELF_STATIC_VIEW_GIT_TAG_RESULT
+    ERROR_QUIET
+  )
+  if(ELF_STATIC_VIEW_GIT_TAG_RESULT EQUAL 0 AND NOT ELF_STATIC_VIEW_GIT_TAG STREQUAL "")
+    set(ELF_STATIC_VIEW_VERSION_STRING "${ELF_STATIC_VIEW_GIT_TAG}")
+  else()
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" describe --tags --abbrev=0 HEAD
+      OUTPUT_VARIABLE ELF_STATIC_VIEW_LAST_GIT_TAG
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE ELF_STATIC_VIEW_LAST_GIT_TAG_RESULT
+      ERROR_QUIET
+    )
+    execute_process(
+      COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" rev-parse --short=8 HEAD
+      OUTPUT_VARIABLE ELF_STATIC_VIEW_GIT_SHA
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+      RESULT_VARIABLE ELF_STATIC_VIEW_GIT_SHA_RESULT
+      ERROR_QUIET
+    )
+    if(ELF_STATIC_VIEW_GIT_SHA_RESULT EQUAL 0 AND NOT ELF_STATIC_VIEW_GIT_SHA STREQUAL "")
+      if(ELF_STATIC_VIEW_LAST_GIT_TAG_RESULT EQUAL 0 AND NOT ELF_STATIC_VIEW_LAST_GIT_TAG STREQUAL "")
+        set(ELF_STATIC_VIEW_VERSION_STRING "${ELF_STATIC_VIEW_LAST_GIT_TAG}+${ELF_STATIC_VIEW_GIT_SHA}")
+      else()
+        set(ELF_STATIC_VIEW_VERSION_STRING "0.0.0+${ELF_STATIC_VIEW_GIT_SHA}")
+      endif()
+    endif()
+  endif()
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -126,39 +164,63 @@ target_link_libraries(
 
 target_compile_features(elf_static_view_imgui PUBLIC cxx_std_20)
 
-add_executable(
-  elf-static-view
-  src/main.cpp
+set(ELF_STATIC_VIEW_APP_SOURCES
+  src/entry.cpp
   src/ui/application.cpp
   src/ui/file_dialogs.cpp
   src/ui/main_window.cpp
   src/ui/version_check.cpp
 )
 
-target_include_directories(
-  elf-static-view
-  PRIVATE
-    src
-)
+function(configure_elf_static_view_target target_name)
+  target_include_directories(
+    ${target_name}
+    PRIVATE
+      src
+  )
 
-target_link_libraries(
-  elf-static-view
-  PRIVATE
-    elf_static_view_core
-    elf_static_view_ui_support
-    elf_static_view_imgui
-    yaml-cpp::yaml-cpp
-    elf_static_view_warnings
-)
+  target_link_libraries(
+    ${target_name}
+    PRIVATE
+      elf_static_view_core
+      elf_static_view_ui_support
+      elf_static_view_imgui
+      yaml-cpp::yaml-cpp
+      elf_static_view_warnings
+  )
 
-target_compile_definitions(
-  elf-static-view
-  PRIVATE
-    ELF_STATIC_VIEW_VERSION="${PROJECT_VERSION}"
-)
+  target_compile_definitions(
+    ${target_name}
+    PRIVATE
+      ELF_STATIC_VIEW_VERSION="${ELF_STATIC_VIEW_VERSION_STRING}"
+  )
+
+  if(WIN32)
+    target_link_libraries(${target_name} PRIVATE comdlg32 winhttp)
+  endif()
+endfunction()
 
 if(WIN32)
-  target_link_libraries(elf-static-view PRIVATE comdlg32 winhttp)
+  add_executable(
+    elf-static-view
+    WIN32
+    src/win32_main.cpp
+    ${ELF_STATIC_VIEW_APP_SOURCES}
+  )
+  add_executable(
+    elf-static-view-cli
+    src/main.cpp
+    ${ELF_STATIC_VIEW_APP_SOURCES}
+  )
+  configure_elf_static_view_target(elf-static-view)
+  configure_elf_static_view_target(elf-static-view-cli)
+else()
+  add_executable(
+    elf-static-view
+    src/main.cpp
+    ${ELF_STATIC_VIEW_APP_SOURCES}
+  )
+  configure_elf_static_view_target(elf-static-view)
 endif()
 
 if(ELF_STATIC_VIEW_BUILD_TESTS)

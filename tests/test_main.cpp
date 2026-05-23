@@ -3,6 +3,7 @@
 #include "elf_static_view/project.hpp"
 #include "platform/utf8.hpp"
 #include "ui/filter_matcher.hpp"
+#include "ui/version_check.hpp"
 
 #include <cstdlib>
 #include <cstdint>
@@ -423,6 +424,56 @@ void verify_elf_symbol_table_endian_matrix() {
   }
 }
 
+void verify_ui_config_round_trip() {
+  const auto temp_root =
+    std::filesystem::temp_directory_path() / "elf-static-view-config-round-trip";
+  std::filesystem::remove_all(temp_root);
+  std::filesystem::create_directories(temp_root);
+  const auto executable_path = temp_root / "elf-static-view.exe";
+
+  elf_static_view::ui::AppState first_state;
+  elf_static_view::ui::load_app_config(first_state, executable_path);
+  first_state.persist_address_bias_to_config = true;
+  first_state.address_bias_input = "0x123";
+  first_state.address_bias = elf_static_view::parse_address_bias(first_state.address_bias_input);
+  first_state.version_check = elf_static_view::ui::VersionCheckState {
+    .check_uri = "https://example.com/releases.yaml",
+    .latest_version = {},
+    .release_url = {},
+    .message = {},
+    .has_new_version = false,
+  };
+  elf_static_view::ui::save_app_config(first_state);
+
+  elf_static_view::ui::AppState restored_state;
+  elf_static_view::ui::load_app_config(restored_state, executable_path);
+  expect_true(restored_state.persist_address_bias_to_config,
+              "地址偏移写回应当从配置文件恢复");
+  expect_true(restored_state.address_bias == elf_static_view::parse_address_bias("0x123"),
+              "地址偏移数值应当从配置文件恢复");
+  expect_true(restored_state.address_bias_input == "0x123",
+              "地址偏移输入框文本应当从配置文件恢复");
+  expect_true(restored_state.version_check.has_value(),
+              "版本检查 URI 应当从配置文件恢复");
+  expect_true(restored_state.version_check->check_uri == "https://example.com/releases.yaml",
+              "版本检查 URI 恢复值不正确");
+
+  restored_state.persist_address_bias_to_config = false;
+  restored_state.address_bias_input = "0x456";
+  restored_state.address_bias = elf_static_view::parse_address_bias(restored_state.address_bias_input);
+  elf_static_view::ui::save_app_config(restored_state);
+
+  elf_static_view::ui::AppState disabled_state;
+  elf_static_view::ui::load_app_config(disabled_state, executable_path);
+  expect_true(!disabled_state.persist_address_bias_to_config,
+              "关闭地址偏移写回后，下次启动不应再启用");
+  expect_true(disabled_state.address_bias == 0, "关闭地址偏移写回后，不应恢复旧地址偏移");
+  expect_true(disabled_state.address_bias_input == "0",
+              "关闭地址偏移写回后，地址偏移输入应保持默认值");
+
+  std::filesystem::remove_all(temp_root);
+}
+
 }  // namespace
 
 int main() {
@@ -435,6 +486,7 @@ int main() {
     verify_address_bias_parsing();
     verify_utf8_path_helpers();
     verify_elf_symbol_table_endian_matrix();
+    verify_ui_config_round_trip();
     std::cout << "all tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

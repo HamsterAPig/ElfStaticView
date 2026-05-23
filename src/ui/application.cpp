@@ -140,7 +140,8 @@ bool Application::initialize() {
   glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
-  window_ = glfwCreateWindow(1600, 960, "ElfStaticView", nullptr, nullptr);
+  const std::string window_title = "ElfStaticView " + current_version_string();
+  window_ = glfwCreateWindow(1600, 960, window_title.c_str(), nullptr, nullptr);
   if (window_ == nullptr) {
     logging::log(logging::Level::Error, "glfwCreateWindow 失败");
     shutdown();
@@ -180,7 +181,7 @@ bool Application::initialize() {
 
   compile_filter_rules(state_.filters);
   try {
-    load_version_check_config(state_, options_.executable_path);
+    load_app_config(state_, options_.executable_path);
   } catch (const std::exception& error) {
     log_error(state_, error.what());
   }

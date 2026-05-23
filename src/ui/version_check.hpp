@@ -6,7 +6,9 @@
 
 namespace elf_static_view::ui {
 
-void load_version_check_config(AppState& state, const std::filesystem::path& executable_path);
+[[nodiscard]] std::string current_version_string();
+void load_app_config(AppState& state, const std::filesystem::path& executable_path);
+void save_app_config(const AppState& state);
 void check_for_new_version(AppState& state);
 
 }  // namespace elf_static_view::ui

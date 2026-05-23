@@ -1,5 +1,6 @@
 #include "ui/version_check.hpp"
 
+#include "analysis/address_bias.hpp"
 #include "platform/utf8.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -61,6 +62,13 @@ std::string read_yaml_scalar(const YAML::Node& node, const char* key) {
   return trim_copy(node[key].as<std::string>());
 }
 
+bool read_yaml_bool(const YAML::Node& node, const char* key, const bool default_value) {
+  if (!node || !node[key]) {
+    return default_value;
+  }
+  return node[key].as<bool>();
+}
+
 std::string read_text_file(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary);
   if (!input.is_open()) {
@@ -76,7 +84,32 @@ std::string strip_version_prefix(std::string value) {
   if (!value.empty() && (value.front() == 'v' || value.front() == 'V')) {
     value.erase(value.begin());
   }
+  if (const auto metadata_separator = value.find('+'); metadata_separator != std::string::npos) {
+    value.erase(metadata_separator);
+  }
   return value;
+}
+
+YAML::Node load_existing_config_root(const std::filesystem::path& path) {
+  if (!std::filesystem::exists(path)) {
+    return YAML::Node(YAML::NodeType::Map);
+  }
+  YAML::Node root = YAML::Load(read_text_file(path));
+  if (!root || !root.IsMap()) {
+    return YAML::Node(YAML::NodeType::Map);
+  }
+  return root;
+}
+
+void write_config_root(const std::filesystem::path& path, const YAML::Node& root) {
+  std::ofstream output(path, std::ios::binary | std::ios::trunc);
+  if (!output.is_open()) {
+    throw std::runtime_error("无法写入配置文件: " + path_to_log_text(path));
+  }
+  YAML::Emitter emitter;
+  emitter.SetIndent(2);
+  emitter << root;
+  output << emitter.c_str();
 }
 
 int compare_versions(const std::string& left, const std::string& right) {
@@ -261,25 +294,71 @@ VersionCheckState parse_version_response(const std::string& response_text,
 
 }  // namespace
 
-void load_version_check_config(AppState& state, const std::filesystem::path& executable_path) {
-  const auto config_path = config_path_for_executable(executable_path);
-  if (!std::filesystem::exists(config_path)) {
-    log_info(state, "未找到配置文件: " + path_to_log_text(config_path));
+std::string current_version_string() {
+  return ELF_STATIC_VIEW_VERSION;
+}
+
+void load_app_config(AppState& state, const std::filesystem::path& executable_path) {
+  state.config_path = config_path_for_executable(executable_path);
+  if (!std::filesystem::exists(state.config_path)) {
+    log_info(state, "未找到配置文件: " + path_to_log_text(state.config_path));
     return;
   }
 
-  const YAML::Node root = YAML::Load(read_text_file(config_path));
+  const YAML::Node root = load_existing_config_root(state.config_path);
   const std::string check_uri = read_yaml_scalar(root["updates"], "check_uri");
-  if (check_uri.empty()) {
-    log_info(state, "配置文件未启用版本检查: " + path_to_log_text(config_path));
+  if (!check_uri.empty()) {
+    VersionCheckState version_check;
+    version_check.check_uri = check_uri;
+    version_check.message = "版本检查 URI 已加载";
+    state.version_check = version_check;
+    log_info(state, "版本检查 URI 已加载: " + check_uri);
+  } else {
+    log_info(state, "配置文件未启用版本检查: " + path_to_log_text(state.config_path));
+  }
+
+  const YAML::Node address_bias = root["address_bias"];
+  state.persist_address_bias_to_config = read_yaml_bool(address_bias, "write_back", false);
+  if (!state.persist_address_bias_to_config) {
     return;
   }
 
-  VersionCheckState version_check;
-  version_check.check_uri = check_uri;
-  version_check.message = "版本检查 URI 已加载";
-  state.version_check = version_check;
-  log_info(state, "版本检查 URI 已加载: " + check_uri);
+  const std::string stored_bias = read_yaml_scalar(address_bias, "value");
+  if (stored_bias.empty()) {
+    log_info(state, "配置文件已启用地址偏移写回，但未找到 address_bias.value。");
+    return;
+  }
+
+  try {
+    state.address_bias = elf_static_view::parse_address_bias(stored_bias);
+    state.address_bias_input = stored_bias;
+    state.address_bias_error.reset();
+    log_info(state, "已从配置文件恢复地址偏移: " + stored_bias);
+  } catch (const std::exception& error) {
+    log_error(state, "配置文件中的地址偏移无效: " + std::string(error.what()));
+  }
+}
+
+void save_app_config(const AppState& state) {
+  if (state.config_path.empty()) {
+    throw std::runtime_error("配置文件路径尚未初始化");
+  }
+
+  YAML::Node root = load_existing_config_root(state.config_path);
+  if (state.version_check.has_value() && !state.version_check->check_uri.empty()) {
+    root["updates"]["check_uri"] = state.version_check->check_uri;
+  }
+
+  YAML::Node address_bias = root["address_bias"];
+  address_bias["write_back"] = state.persist_address_bias_to_config;
+  if (state.persist_address_bias_to_config && !state.address_bias_error.has_value()) {
+    const std::string bias_text = trim_copy(state.address_bias_input);
+    if (!bias_text.empty()) {
+      address_bias["value"] = bias_text;
+    }
+  }
+
+  write_config_root(state.config_path, root);
 }
 
 void check_for_new_version(AppState& state) {

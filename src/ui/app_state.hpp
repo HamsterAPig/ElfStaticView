@@ -2,6 +2,7 @@
 
 #include "elf_static_view/project.hpp"
 
+#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
@@ -52,6 +53,8 @@ struct AppState {
   std::int64_t address_bias = 0;
   std::string address_bias_input = "0";
   std::optional<std::string> address_bias_error;
+  std::filesystem::path config_path;
+  bool persist_address_bias_to_config = false;
   bool show_log_panel = true;
   bool show_json_preview_panel = true;
   bool show_about_dialog = false;

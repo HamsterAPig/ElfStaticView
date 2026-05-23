@@ -105,21 +105,20 @@ void copy_selected_address_minus_bias(AppState& state) {
 
 void handle_global_shortcuts(AppState& state) {
   const ImGuiIO& io = ImGui::GetIO();
-  if (io.WantTextInput) {
-    return;
-  }
 
   // 这里集中处理全局快捷键，避免每个面板自行抢键盘焦点。
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F)) {
+  if (!io.WantTextInput &&
+      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_F, ImGuiInputFlags_RouteGlobal)) {
     state.focus_variable_search = true;
   }
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C)) {
+  if (!io.WantTextInput &&
+      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, ImGuiInputFlags_RouteGlobal)) {
     copy_selected_address_minus_bias(state);
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_F1, false)) {
+  if (ImGui::Shortcut(ImGuiKey_F1, ImGuiInputFlags_RouteGlobal)) {
     state.show_shortcuts_dialog = true;
   }
-  if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+  if (ImGui::Shortcut(ImGuiKey_Escape, ImGuiInputFlags_RouteGlobal)) {
     state.focus_variable_search = false;
     ImGui::ClearActiveID();
   }
@@ -343,8 +342,23 @@ void render_filters(AppState& state) {
     try {
       state.address_bias = elf_static_view::parse_address_bias(state.address_bias_input);
       state.address_bias_error.reset();
+      if (state.persist_address_bias_to_config) {
+        save_app_config(state);
+      }
     } catch (const std::exception& error) {
       state.address_bias_error = error.what();
+    }
+  }
+  if (ImGui::Checkbox("将地址偏移写回配置文件", &state.persist_address_bias_to_config)) {
+    try {
+      save_app_config(state);
+      log_info(state,
+               state.persist_address_bias_to_config
+                 ? "已启用地址偏移写回配置文件"
+                 : "已禁用地址偏移写回配置文件");
+    } catch (const std::exception& error) {
+      state.persist_address_bias_to_config = !state.persist_address_bias_to_config;
+      log_error(state, error.what());
     }
   }
   ImGui::TextUnformatted(elf_static_view::format_bias_value(state.address_bias).c_str());
@@ -464,6 +478,7 @@ void render_about_dialog(AppState& state) {
   if (ImGui::BeginPopupModal("About ElfStaticView", &state.show_about_dialog, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextUnformatted("ElfStaticView");
     ImGui::Separator();
+    ImGui::Text("Version: %s", current_version_string().c_str());
     ImGui::TextUnformatted("GLFW + OpenGL3 + Dear ImGui");
     ImGui::TextUnformatted("Offline ELF/DWARF static variable explorer");
     ImGui::TextUnformatted("Dependencies: ImGui, GLFW, libdwarf, yaml-cpp");
@@ -491,6 +506,7 @@ void render_shortcuts_dialog(AppState& state) {
     ImGui::BulletText("Esc: 清理当前输入焦点");
     ImGui::Separator();
     ImGui::TextWrapped("版本检查 URI 来自可执行程序同目录的 elf-static-view.yaml，字段为 updates.check_uri。");
+    ImGui::TextWrapped("地址偏移配置位于 address_bias.write_back 和 address_bias.value。");
     if (ImGui::Button("Close")) {
       state.show_shortcuts_dialog = false;
       ImGui::CloseCurrentPopup();
