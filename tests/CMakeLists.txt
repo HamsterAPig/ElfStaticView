@@ -53,6 +53,7 @@ target_include_directories(
   PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}"
     "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_BINARY_DIR}/generated"
 )
 target_link_libraries(
   elf_static_view_tests
@@ -69,10 +70,11 @@ endif()
 
 add_dependencies(elf_static_view_tests static_vars_c.elf_fixture static_vars_cpp.elf_fixture)
 
+add_dependencies(elf_static_view_tests elf_static_view_version_header)
+
 target_compile_definitions(
   elf_static_view_tests
   PRIVATE
-    ELF_STATIC_VIEW_VERSION="${ELF_STATIC_VIEW_VERSION_STRING}"
     ELF_STATIC_VIEW_C_FIXTURE_PATH="${static_vars_c.elf_OUTPUT}"
     ELF_STATIC_VIEW_CPP_FIXTURE_PATH="${static_vars_cpp.elf_OUTPUT}"
     ELF_STATIC_VIEW_C_EXPECTED_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c/static_vars.expected.json"

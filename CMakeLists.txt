@@ -10,43 +10,24 @@ project(
 include(CTest)
 include(FetchContent)
 
-find_package(Git QUIET)
+set(ELF_STATIC_VIEW_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated")
+set(ELF_STATIC_VIEW_VERSION_HEADER "${ELF_STATIC_VIEW_GENERATED_INCLUDE_DIR}/elf_static_view/version.hpp")
+file(MAKE_DIRECTORY "${ELF_STATIC_VIEW_GENERATED_INCLUDE_DIR}/elf_static_view")
 
-set(ELF_STATIC_VIEW_VERSION_STRING "${PROJECT_VERSION}")
-if(GIT_FOUND)
-  execute_process(
-    COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" describe --tags --exact-match HEAD
-    OUTPUT_VARIABLE ELF_STATIC_VIEW_GIT_TAG
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE ELF_STATIC_VIEW_GIT_TAG_RESULT
-    ERROR_QUIET
-  )
-  if(ELF_STATIC_VIEW_GIT_TAG_RESULT EQUAL 0 AND NOT ELF_STATIC_VIEW_GIT_TAG STREQUAL "")
-    set(ELF_STATIC_VIEW_VERSION_STRING "${ELF_STATIC_VIEW_GIT_TAG}")
-  else()
-    execute_process(
-      COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" describe --tags --abbrev=0 HEAD
-      OUTPUT_VARIABLE ELF_STATIC_VIEW_LAST_GIT_TAG
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      RESULT_VARIABLE ELF_STATIC_VIEW_LAST_GIT_TAG_RESULT
-      ERROR_QUIET
-    )
-    execute_process(
-      COMMAND "${GIT_EXECUTABLE}" -C "${CMAKE_SOURCE_DIR}" rev-parse --short=8 HEAD
-      OUTPUT_VARIABLE ELF_STATIC_VIEW_GIT_SHA
-      OUTPUT_STRIP_TRAILING_WHITESPACE
-      RESULT_VARIABLE ELF_STATIC_VIEW_GIT_SHA_RESULT
-      ERROR_QUIET
-    )
-    if(ELF_STATIC_VIEW_GIT_SHA_RESULT EQUAL 0 AND NOT ELF_STATIC_VIEW_GIT_SHA STREQUAL "")
-      if(ELF_STATIC_VIEW_LAST_GIT_TAG_RESULT EQUAL 0 AND NOT ELF_STATIC_VIEW_LAST_GIT_TAG STREQUAL "")
-        set(ELF_STATIC_VIEW_VERSION_STRING "${ELF_STATIC_VIEW_LAST_GIT_TAG}+${ELF_STATIC_VIEW_GIT_SHA}")
-      else()
-        set(ELF_STATIC_VIEW_VERSION_STRING "0.0.0+${ELF_STATIC_VIEW_GIT_SHA}")
-      endif()
-    endif()
-  endif()
-endif()
+add_custom_target(
+  elf_static_view_version_header ALL
+  COMMAND
+    "${CMAKE_COMMAND}"
+    -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+    -DOUTPUT_FILE=${ELF_STATIC_VIEW_VERSION_HEADER}
+    -DTEMP_FILE=${ELF_STATIC_VIEW_VERSION_HEADER}.tmp
+    -P "${CMAKE_SOURCE_DIR}/cmake/resolve_version.cmake"
+  BYPRODUCTS
+    "${ELF_STATIC_VIEW_VERSION_HEADER}"
+    "${ELF_STATIC_VIEW_VERSION_HEADER}.tmp"
+  VERBATIM
+  COMMENT "Resolving git-backed ElfStaticView version"
+)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -173,10 +154,13 @@ set(ELF_STATIC_VIEW_APP_SOURCES
 )
 
 function(configure_elf_static_view_target target_name)
+  add_dependencies(${target_name} elf_static_view_version_header)
+
   target_include_directories(
     ${target_name}
     PRIVATE
       src
+      "${ELF_STATIC_VIEW_GENERATED_INCLUDE_DIR}"
   )
 
   target_link_libraries(
@@ -187,12 +171,6 @@ function(configure_elf_static_view_target target_name)
       elf_static_view_imgui
       yaml-cpp::yaml-cpp
       elf_static_view_warnings
-  )
-
-  target_compile_definitions(
-    ${target_name}
-    PRIVATE
-      ELF_STATIC_VIEW_VERSION="${ELF_STATIC_VIEW_VERSION_STRING}"
   )
 
   if(WIN32)

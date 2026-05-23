@@ -1,5 +1,6 @@
 #include "ui/version_check.hpp"
 
+#include "elf_static_view/version.hpp"
 #include "analysis/address_bias.hpp"
 #include "platform/utf8.hpp"
 
@@ -20,10 +21,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-
-#ifndef ELF_STATIC_VIEW_VERSION
-#define ELF_STATIC_VIEW_VERSION "0.0.0"
-#endif
 
 namespace elf_static_view::ui {
 
