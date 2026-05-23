@@ -20,5 +20,9 @@ public:
 [[nodiscard]] std::string render_scan_text(const ProjectModel& model);
 [[nodiscard]] std::string render_dump_text(const ProjectModel& model);
 [[nodiscard]] std::string render_dump_json(const ProjectModel& model);
+[[nodiscard]] ProjectModel parse_dump_json(const std::string& json_text);
+[[nodiscard]] std::string render_snapshot_json(const ProjectSnapshot& snapshot);
+[[nodiscard]] ProjectSnapshot parse_snapshot_json(const std::string& json_text);
+[[nodiscard]] std::string render_expanded_node_json(const ExpandedNode& node);
 
 }  // namespace elf_static_view

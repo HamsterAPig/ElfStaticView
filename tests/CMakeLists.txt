@@ -47,11 +47,17 @@ add_executable(elf_static_view_tests
   test_main.cpp
 )
 
-target_include_directories(elf_static_view_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(
+  elf_static_view_tests
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/src"
+)
 target_link_libraries(
   elf_static_view_tests
   PRIVATE
     elf_static_view_core
+    elf_static_view_ui_support
     elf_static_view_warnings
 )
 

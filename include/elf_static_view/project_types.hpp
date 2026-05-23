@@ -148,6 +148,14 @@ struct ProjectModel {
   std::vector<ExpandedNode> expanded;
 };
 
+struct ProjectSnapshot {
+  std::uint64_t schema_version = 1;
+  std::string source_kind = "elf-static-view";
+  std::string source_file;
+  std::string exported_at;
+  ProjectModel model;
+};
+
 struct ScanOptions {
   bool include_runtime_only = false;
 };
