@@ -6,6 +6,13 @@
 #include <string_view>
 
 #if defined(_WIN32)
+// Prevent Windows headers from defining min/max macros in shared headers.
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
