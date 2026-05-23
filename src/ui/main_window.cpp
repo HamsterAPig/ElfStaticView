@@ -6,6 +6,7 @@
 #include "ui/filter_matcher.hpp"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <misc/cpp/imgui_stdlib.h>
 
 #include <fstream>
@@ -15,6 +16,38 @@
 namespace elf_static_view::ui {
 
 namespace {
+
+constexpr char kMainDockspaceName[] = "MainDockSpace";
+constexpr char kVariablesWindowName[] = "Variables";
+constexpr char kInspectorWindowName[] = "Inspector";
+constexpr char kLogWindowName[] = "Log";
+constexpr char kJsonPreviewWindowName[] = "JSON Preview";
+
+void setup_default_dock_layout(ImGuiID dockspace_id,
+                               const ImGuiViewport* viewport,
+                               ImGuiDockNodeFlags dockspace_flags) {
+  if (ImGuiDockNode* node = ImGui::DockBuilderGetNode(dockspace_id);
+      node != nullptr &&
+      (node->ChildNodes[0] != nullptr || node->ChildNodes[1] != nullptr || node->Windows.Size > 0)) {
+    return;
+  }
+
+  ImGui::DockBuilderRemoveNode(dockspace_id);
+  ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
+  ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
+
+  ImGuiID center_id = dockspace_id;
+  const ImGuiID left_id = ImGui::DockBuilderSplitNode(center_id, ImGuiDir_Left, 0.28F, nullptr, &center_id);
+  const ImGuiID right_id = ImGui::DockBuilderSplitNode(center_id, ImGuiDir_Right, 0.32F, nullptr, &center_id);
+  const ImGuiID bottom_id = ImGui::DockBuilderSplitNode(center_id, ImGuiDir_Down, 0.30F, nullptr, &center_id);
+
+  // 首次启动时给四个核心面板一个稳定分区，避免全部叠在同一个 dock tab 里。
+  ImGui::DockBuilderDockWindow(kVariablesWindowName, left_id);
+  ImGui::DockBuilderDockWindow(kInspectorWindowName, right_id);
+  ImGui::DockBuilderDockWindow(kLogWindowName, bottom_id);
+  ImGui::DockBuilderDockWindow(kJsonPreviewWindowName, center_id);
+  ImGui::DockBuilderFinish(dockspace_id);
+}
 
 bool node_or_descendant_matches(const AppState& state, const ExpandedNode& node) {
   if (matches_filters(state, node)) {
@@ -216,7 +249,7 @@ void render_filters(AppState& state) {
 }
 
 void render_variables_panel(AppState& state) {
-  if (!ImGui::Begin("Variables")) {
+  if (!ImGui::Begin(kVariablesWindowName)) {
     ImGui::End();
     return;
   }
@@ -237,7 +270,7 @@ void render_variables_panel(AppState& state) {
 }
 
 void render_inspector_panel(AppState& state) {
-  if (!ImGui::Begin("Inspector")) {
+  if (!ImGui::Begin(kInspectorWindowName)) {
     ImGui::End();
     return;
   }
@@ -271,7 +304,7 @@ void render_log_panel(AppState& state) {
   if (!state.show_log_panel) {
     return;
   }
-  if (!ImGui::Begin("Log", &state.show_log_panel)) {
+  if (!ImGui::Begin(kLogWindowName, &state.show_log_panel)) {
     ImGui::End();
     return;
   }
@@ -289,7 +322,7 @@ void render_json_preview_panel(AppState& state) {
   if (!state.show_json_preview_panel) {
     return;
   }
-  if (!ImGui::Begin("JSON Preview", &state.show_json_preview_panel)) {
+  if (!ImGui::Begin(kJsonPreviewWindowName, &state.show_json_preview_panel)) {
     ImGui::End();
     return;
   }
@@ -336,8 +369,13 @@ void render_about_dialog(AppState& state) {
 }  // namespace
 
 void MainWindow::render(AppState& state) {
+  constexpr ImGuiDockNodeFlags kDockspaceFlags = ImGuiDockNodeFlags_PassthruCentralNode;
+  const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
+  const ImGuiID dockspace_id = ImGui::GetID(kMainDockspaceName);
+
   render_menu_bar(state);
-  ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
+  ImGui::DockSpaceOverViewport(dockspace_id, main_viewport, kDockspaceFlags);
+  setup_default_dock_layout(dockspace_id, main_viewport, kDockspaceFlags);
   render_variables_panel(state);
   render_inspector_panel(state);
   render_log_panel(state);
