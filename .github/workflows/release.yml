@@ -44,48 +44,40 @@ jobs:
         shell: pwsh
         run: ctest --test-dir build --build-config Release --output-on-failure
 
-      - name: Package Release Bundle
+      - name: Collect Release Executables
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}"
           $distDir = Join-Path $PWD "dist"
-          $bundleDir = Join-Path $distDir "ElfStaticView-$tag-windows-x64"
           $releaseDir = Join-Path $PWD "build\Release"
-          $assetPath = Join-Path $distDir "ElfStaticView-$tag-windows-x64.zip"
+          $suffix = "${{ github.ref_name }}-windows-x64"
+          $guiExe = Join-Path $distDir "ElfStaticView-$suffix.exe"
+          $cliExe = Join-Path $distDir "ElfStaticView-CLI-$suffix.exe"
 
-          if (Test-Path $bundleDir) {
-            Remove-Item -LiteralPath $bundleDir -Recurse -Force
-          }
+          New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
-          New-Item -ItemType Directory -Path $bundleDir -Force | Out-Null
-          Copy-Item -LiteralPath (Join-Path $releaseDir "elf-static-view.exe") -Destination $bundleDir
-          Copy-Item -LiteralPath (Join-Path $releaseDir "elf-static-view-cli.exe") -Destination $bundleDir
-
-          $pdbFiles = @(
-            Join-Path $releaseDir "elf-static-view.pdb"
-            Join-Path $releaseDir "elf-static-view-cli.pdb"
-          )
-          foreach ($pdb in $pdbFiles) {
-            if (Test-Path $pdb) {
-              Copy-Item -LiteralPath $pdb -Destination $bundleDir
+          foreach ($assetPath in @($guiExe, $cliExe)) {
+            if (Test-Path $assetPath) {
+              Remove-Item -LiteralPath $assetPath -Force
             }
           }
 
-          if (Test-Path $assetPath) {
-            Remove-Item -LiteralPath $assetPath -Force
-          }
+          Copy-Item -LiteralPath (Join-Path $releaseDir "elf-static-view.exe") -Destination $guiExe
+          Copy-Item -LiteralPath (Join-Path $releaseDir "elf-static-view-cli.exe") -Destination $cliExe
 
-          Compress-Archive -Path (Join-Path $bundleDir "*") -DestinationPath $assetPath
-
-      - name: Upload Release Bundle Artifact
+      - name: Upload Release Executables Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: windows-release-bundle
-          path: dist/ElfStaticView-${{ github.ref_name }}-windows-x64.zip
+          name: windows-release-executables
+          path: |
+            dist/ElfStaticView-${{ github.ref_name }}-windows-x64.exe
+            dist/ElfStaticView-CLI-${{ github.ref_name }}-windows-x64.exe
           if-no-files-found: error
 
       - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ElfStaticView-${{ github.ref_name }}-windows-x64.zip
+          files: |
+            dist/ElfStaticView-${{ github.ref_name }}-windows-x64.exe
+            dist/ElfStaticView-CLI-${{ github.ref_name }}-windows-x64.exe
           generate_release_notes: true
