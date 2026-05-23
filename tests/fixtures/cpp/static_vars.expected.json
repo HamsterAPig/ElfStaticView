@@ -1,0 +1,6 @@
+"name": "global_object"
+"path": "demo::global_object.item.value"
+"path": "demo::object_array[0]"
+"path": "demo::object_array[1]"
+"name": "shared"
+"availability": "RuntimeOnly"
