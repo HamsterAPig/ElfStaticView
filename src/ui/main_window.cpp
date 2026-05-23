@@ -228,10 +228,21 @@ void render_menu_bar(AppState& state) {
 }
 
 void render_filters(AppState& state) {
-  if (ImGui::InputText("变量名搜索", &state.filters.form.variable_name_query)) {
+  ImGui::TextUnformatted("变量名搜索");
+  ImGui::SetNextItemWidth(-1.0F);
+  if (ImGui::InputTextWithHint("##variable_name_query",
+                               "匹配变量名或完整路径中的子串",
+                               &state.filters.form.variable_name_query)) {
     compile_filter_rules(state.filters);
   }
-  if (ImGui::InputTextMultiline("路径规则", &state.filters.form.path_rules_text, ImVec2(-1.0F, 90.0F))) {
+
+  ImGui::TextUnformatted("路径规则");
+  ImGui::SameLine();
+  ImGui::TextDisabled("支持 * / ** 通配；每行一条；! 前缀表示排除");
+  // 路径规则输入框需要占满剩余宽度，但标签单独放在上方，避免左侧窄 dock 把右侧 label 挤出可视区。
+  if (ImGui::InputTextMultiline("##path_rules_text",
+                                &state.filters.form.path_rules_text,
+                                ImVec2(ImGui::GetContentRegionAvail().x, 90.0F))) {
     compile_filter_rules(state.filters);
   }
   if (ImGui::Checkbox("包含 runtime-only", &state.filters.form.include_runtime_only)) {

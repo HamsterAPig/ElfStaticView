@@ -1,14 +1,18 @@
+#include "elf/elf_symbol_table.hpp"
 #include "elf_static_view/project.hpp"
 #include "platform/utf8.hpp"
 #include "ui/filter_matcher.hpp"
 
 #include <cstdlib>
+#include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -185,6 +189,137 @@ void verify_utf8_path_helpers() {
 #endif
 }
 
+void append_u16_le(std::vector<std::uint8_t>& bytes, const std::uint16_t value) {
+  bytes.push_back(static_cast<std::uint8_t>(value & 0xffU));
+  bytes.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xffU));
+}
+
+void append_u32_le(std::vector<std::uint8_t>& bytes, const std::uint32_t value) {
+  bytes.push_back(static_cast<std::uint8_t>(value & 0xffU));
+  bytes.push_back(static_cast<std::uint8_t>((value >> 8U) & 0xffU));
+  bytes.push_back(static_cast<std::uint8_t>((value >> 16U) & 0xffU));
+  bytes.push_back(static_cast<std::uint8_t>((value >> 24U) & 0xffU));
+}
+
+void write_padding(std::vector<std::uint8_t>& bytes, const std::size_t target_size) {
+  if (bytes.size() < target_size) {
+    bytes.resize(target_size, 0U);
+  }
+}
+
+void append_elf32_header(std::vector<std::uint8_t>& bytes, const std::uint32_t section_header_offset) {
+  bytes.push_back(0x7fU);
+  bytes.push_back(static_cast<std::uint8_t>('E'));
+  bytes.push_back(static_cast<std::uint8_t>('L'));
+  bytes.push_back(static_cast<std::uint8_t>('F'));
+  bytes.push_back(1U);
+  bytes.push_back(1U);
+  bytes.push_back(1U);
+  bytes.push_back(0U);
+  bytes.resize(16, 0U);
+
+  append_u16_le(bytes, 1U);
+  append_u16_le(bytes, 40U);
+  append_u32_le(bytes, 1U);
+  append_u32_le(bytes, 0U);
+  append_u32_le(bytes, 0U);
+  append_u32_le(bytes, section_header_offset);
+  append_u32_le(bytes, 0U);
+  append_u16_le(bytes, 52U);
+  append_u16_le(bytes, 0U);
+  append_u16_le(bytes, 0U);
+  append_u16_le(bytes, 40U);
+  append_u16_le(bytes, 3U);
+  append_u16_le(bytes, 0U);
+}
+
+void append_elf32_section_header(std::vector<std::uint8_t>& bytes,
+                                 const std::uint32_t type,
+                                 const std::uint32_t offset,
+                                 const std::uint32_t size,
+                                 const std::uint32_t link,
+                                 const std::uint32_t entry_size) {
+  append_u32_le(bytes, 0U);
+  append_u32_le(bytes, type);
+  append_u32_le(bytes, 0U);
+  append_u32_le(bytes, 0U);
+  append_u32_le(bytes, offset);
+  append_u32_le(bytes, size);
+  append_u32_le(bytes, link);
+  append_u32_le(bytes, 0U);
+  append_u32_le(bytes, 0U);
+  append_u32_le(bytes, entry_size);
+}
+
+void append_elf32_symbol(std::vector<std::uint8_t>& bytes,
+                         const std::uint32_t name_offset,
+                         const std::uint32_t value,
+                         const std::uint32_t size,
+                         const std::uint8_t info,
+                         const std::uint16_t section_index) {
+  append_u32_le(bytes, name_offset);
+  append_u32_le(bytes, value);
+  append_u32_le(bytes, size);
+  bytes.push_back(info);
+  bytes.push_back(0U);
+  append_u16_le(bytes, section_index);
+}
+
+void verify_elf32_symbol_table_support() {
+  constexpr std::uint32_t symbol_table_offset = 0x40U;
+  constexpr std::uint32_t string_table_offset = 0x70U;
+  constexpr std::uint32_t section_header_offset = 0x90U;
+  const std::string string_table = std::string("\0g_counter\0tls_counter\0", 23);
+
+  std::vector<std::uint8_t> bytes;
+  append_elf32_header(bytes, section_header_offset);
+  write_padding(bytes, symbol_table_offset);
+
+  append_elf32_symbol(bytes, 0U, 0U, 0U, 0U, 0U);
+  append_elf32_symbol(bytes, 1U, 0x20000010U, 4U, 1U, 1U);
+  append_elf32_symbol(bytes, 11U, 0x20000020U, 4U, 6U, 1U);
+
+  write_padding(bytes, string_table_offset);
+  bytes.insert(bytes.end(), string_table.begin(), string_table.end());
+
+  write_padding(bytes, section_header_offset);
+  append_elf32_section_header(bytes, 0U, 0U, 0U, 0U, 0U);
+  append_elf32_section_header(bytes, 2U, symbol_table_offset, 48U, 2U, 16U);
+  append_elf32_section_header(
+    bytes,
+    3U,
+    string_table_offset,
+    static_cast<std::uint32_t>(string_table.size()),
+    0U,
+    0U);
+
+  const auto path = std::filesystem::temp_directory_path() / "elf_static_view_elf32_symtab_test.elf";
+  {
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+      throw std::runtime_error("无法写入 ELF32 测试夹具");
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+      throw std::runtime_error("写入 ELF32 测试夹具失败");
+    }
+  }
+
+  const auto table = elf_static_view::elf::ElfSymbolTable::load(path.string());
+  const auto object_symbol = table.find("g_counter");
+  expect_true(object_symbol.has_value(), "ELF32 对象符号应可被解析");
+  expect_true(object_symbol->value == 0x20000010U, "ELF32 对象符号地址应保留");
+  expect_true(object_symbol->size == 4U, "ELF32 对象符号大小应保留");
+  expect_true(!object_symbol->is_thread_local, "普通对象符号不应被标记为 TLS");
+
+  const auto tls_symbol = table.find("tls_counter");
+  expect_true(tls_symbol.has_value(), "ELF32 TLS 符号应可被解析");
+  expect_true(tls_symbol->is_thread_local, "TLS 符号应被标记为 TLS");
+
+  std::error_code remove_error;
+  std::filesystem::remove(path, remove_error);
+}
+
 }  // namespace
 
 int main() {
@@ -195,6 +330,7 @@ int main() {
     verify_filter_rules();
     verify_address_bias();
     verify_utf8_path_helpers();
+    verify_elf32_symbol_table_support();
     std::cout << "all tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {
