@@ -302,6 +302,26 @@ std::optional<Dwarf_Addr> address_attr(Dwarf_Attribute attr) {
   return value;
 }
 
+std::optional<Dwarf_Addr> indexed_address_from_die_location(Dwarf_Die die,
+                                                            const LocationDescription& location) {
+  if (location.kind != DW_LKIND_expression || location.operations.size() != 1) {
+    return std::nullopt;
+  }
+
+  const auto& op = location.operations.front();
+  if (op.atom != DW_OP_addrx && op.atom != DW_OP_GNU_addr_index) {
+    return std::nullopt;
+  }
+
+  Dwarf_Addr value = 0;
+  Dwarf_Error error = nullptr;
+  const int result = dwarf_debug_addr_index_to_addr(die, op.operand1, &value, &error);
+  if (result != DW_DLV_OK) {
+    return std::nullopt;
+  }
+  return value;
+}
+
 std::optional<LocationDescription> read_location_description(Dwarf_Attribute attr) {
   Dwarf_Loc_Head_c head = nullptr;
   Dwarf_Unsigned entry_count = 0;

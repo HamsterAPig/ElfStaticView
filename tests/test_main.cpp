@@ -41,6 +41,18 @@ void expect_contains(const std::string& content, const std::string& needle, cons
   }
 }
 
+std::vector<const elf_static_view::VariableRecord*> find_file_static_variables(
+  const elf_static_view::ProjectModel& model,
+  const std::string& name) {
+  std::vector<const elf_static_view::VariableRecord*> matches;
+  for (const auto& symbol : model.symbols) {
+    if (symbol.name == name && symbol.variable_kind == elf_static_view::VariableKind::FileStatic) {
+      matches.push_back(&symbol);
+    }
+  }
+  return matches;
+}
+
 void verify_fixture(const std::string& fixture_path, const std::string& expected_json_path) {
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(fixture_path,
@@ -71,6 +83,26 @@ void verify_json_round_trip(const std::string& fixture_path) {
   const auto parsed = elf_static_view::parse_dump_json(json);
   expect_true(parsed.file == model.file, "JSON 往返后文件路径应保持一致");
   expect_true(parsed.expanded.size() == model.expanded.size(), "JSON 往返后展开节点数量应保持一致");
+}
+
+void verify_multi_cu_file_static_fixture() {
+  elf_static_view::ProjectLoader loader;
+  const auto model = loader.dump(ELF_STATIC_VIEW_MULTI_CU_FIXTURE_PATH,
+                                 {.include_runtime_only = true,
+                                  .only_static_known = false,
+                                  .symbol_name = std::nullopt,
+                                  .expand_depth = 8});
+
+  // 这里故意在两个源文件里放同名 file-static 变量，验证解析器不会把不同 CU 的局部符号串成一个。
+  expect_true(model.compile_units.size() >= 2, "多 CU fixture 至少应包含两个编译单元");
+  const auto matches = find_file_static_variables(model, "shared_value");
+  expect_true(matches.size() == 2, "应解析出两个同名 file-static 变量");
+  expect_true(matches[0]->compile_unit_name != matches[1]->compile_unit_name,
+              "两个同名变量应来自不同编译单元");
+  expect_true(matches[0]->address.absolute_address.has_value(), "第一个变量应有绝对地址");
+  expect_true(matches[1]->address.absolute_address.has_value(), "第二个变量应有绝对地址");
+  expect_true(matches[0]->address.absolute_address.value() != matches[1]->address.absolute_address.value(),
+              "两个变量的绝对地址应不同");
 }
 
 elf_static_view::ExpandedNode make_node(const std::string& path,
@@ -610,6 +642,7 @@ int main() {
   try {
     verify_fixture(ELF_STATIC_VIEW_C_FIXTURE_PATH, ELF_STATIC_VIEW_C_EXPECTED_JSON);
     verify_fixture(ELF_STATIC_VIEW_CPP_FIXTURE_PATH, ELF_STATIC_VIEW_CPP_EXPECTED_JSON);
+    verify_multi_cu_file_static_fixture();
     verify_json_round_trip(ELF_STATIC_VIEW_CPP_FIXTURE_PATH);
     verify_filter_rules();
     verify_address_bias();

@@ -110,6 +110,9 @@ struct LocationDescription {
   std::vector<LocationOp> operations;
 };
 
+[[nodiscard]] std::optional<Dwarf_Addr> indexed_address_from_die_location(
+  Dwarf_Die die,
+  const LocationDescription& location);
 [[nodiscard]] std::optional<LocationDescription> read_location_description(
   Dwarf_Attribute attr);
 

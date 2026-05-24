@@ -43,6 +43,14 @@ struct ReaderContext {
 
 void apply_symbol_addresses(const ElfSymbolTable& symbols, std::vector<VariableRecord>& variables) {
   for (auto& variable : variables) {
+    // 多个 CU 里可能出现同名 file-static；如果 DWARF 已经给出精确绝对地址，
+    // 这里不能再用按名称查到的 ELF 符号去覆盖，否则会把别的 CU 的同名局部符号地址串进来。
+    if (variable.availability == Availability::StaticAddressKnown &&
+        variable.address.kind == AddressKind::Absolute &&
+        variable.address.absolute_address.has_value()) {
+      continue;
+    }
+
     std::vector<std::string> candidates;
     if (variable.linkage_name.has_value() && !variable.linkage_name->empty()) {
       candidates.push_back(variable.linkage_name.value());
@@ -436,9 +444,13 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
   const auto external_attr = attribute_of(context.debug, die, DW_AT_external);
   const bool external = external_attr.has_value() && flag_attr(external_attr->get()).value_or(false);
   const auto location_attr = attribute_of(context.debug, die, DW_AT_location);
-  const auto direct_addr = location_attr.has_value() ? address_attr(location_attr->get()) : std::nullopt;
   const auto location_desc =
     location_attr.has_value() ? read_location_description(location_attr->get()) : std::nullopt;
+  const auto direct_addr = location_attr.has_value()
+                             ? address_attr(location_attr->get())
+                             : std::nullopt;
+  const auto resolved_indexed_addr =
+    location_desc.has_value() ? indexed_address_from_die_location(die, location_desc.value()) : std::nullopt;
   const bool is_thread_local =
     location_desc.has_value() &&
     std::any_of(location_desc->operations.begin(),
@@ -447,7 +459,9 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
   variable.is_thread_local = is_thread_local;
   // 这里先把位置表达式归一到统一模型，后面的 CLI 和测试都只依赖这个分类结果。
   variable.availability = Availability::Unavailable;
-  variable.address = classify_location(location_desc, direct_addr, variable.availability);
+  variable.address = classify_location(location_desc,
+                                       direct_addr.has_value() ? direct_addr : resolved_indexed_addr,
+                                       variable.availability);
 
   if (is_thread_local) {
     variable.availability = Availability::RuntimeOnly;
