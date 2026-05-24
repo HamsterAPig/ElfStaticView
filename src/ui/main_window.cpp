@@ -304,6 +304,15 @@ void load_elf_from_dialog(AppState& state) {
                      LoadedContentKind::ElfProject,
                      file_path.value());
   log_info(state, "已打开 ELF 文件: " + file_path.value());
+  if (state.project_model.has_value()) {
+    const auto& elf_info = state.project_model->elf_info;
+    log_info(state,
+             "ELF 信息: class=" + elf_info.object_class +
+               ", endian=" + elf_info.byte_order +
+               ", type=" + elf_info.file_type +
+               ", machine=" + elf_info.machine +
+               ", osabi=" + elf_info.os_abi);
+  }
 }
 
 void import_snapshot_from_dialog(AppState& state) {
@@ -329,7 +338,8 @@ void export_snapshot_from_dialog(AppState& state) {
   if (value.exported_at.empty()) {
     value.exported_at = "generated-by-ui";
   }
-  write_all_text(file_path.value(), render_snapshot_json(value));
+  write_all_text(file_path.value(),
+                 render_snapshot_json(value, {.include_sensitive_info = state.export_sensitive_info}));
   log_info(state, "已导出 JSON 快照: " + file_path.value());
 }
 
@@ -360,6 +370,8 @@ void render_menu_bar(AppState& state) {
         log_error(state, error.what());
       }
     }
+    ImGui::Separator();
+    ImGui::Checkbox("导出敏感信息", &state.export_sensitive_info);
     if (ImGui::MenuItem("退出")) {
       state.request_exit = true;
     }
@@ -564,7 +576,8 @@ void render_json_preview_panel(AppState& state) {
     preview_text = json.value();
   } else if (state.project_model.has_value()) {
     if (auto snapshot = build_snapshot(state); snapshot.has_value()) {
-      preview_text = render_snapshot_json(snapshot.value());
+      preview_text = render_snapshot_json(snapshot.value(),
+                                          {.include_sensitive_info = state.export_sensitive_info});
     }
   }
 

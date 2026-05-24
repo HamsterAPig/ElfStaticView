@@ -74,6 +74,7 @@ struct AppState {
   bool window_title_dirty = false;
   bool show_log_panel = true;
   bool show_json_preview_panel = true;
+  bool export_sensitive_info = false;
   bool show_about_dialog = false;
   bool show_shortcuts_dialog = false;
   bool request_exit = false;

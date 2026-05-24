@@ -629,8 +629,14 @@ ProjectModel DwarfReader::load(const std::string& file_path) const {
   model.compile_units = std::move(context.compile_units);
   model.types = std::move(context.types);
   model.symbols = std::move(context.variables);
+  const auto symbol_table = ElfSymbolTable::load(file_path);
+  model.elf_info = ElfFileInfo {.object_class = symbol_table.metadata().object_class,
+                                .byte_order = symbol_table.metadata().byte_order,
+                                .file_type = symbol_table.metadata().file_type,
+                                .machine = symbol_table.metadata().machine,
+                                .os_abi = symbol_table.metadata().os_abi};
   // DWARF 位置表达式不总能直接给出静态绝对地址，这里再用 ELF 符号表补一遍静态对象地址。
-  apply_symbol_addresses(ElfSymbolTable::load(file_path), model.symbols);
+  apply_symbol_addresses(symbol_table, model.symbols);
   deduplicate_variables(model.symbols);
   return model;
 }

@@ -117,6 +117,14 @@ struct CompileUnitRecord {
   std::string language;
 };
 
+struct ElfFileInfo {
+  std::string object_class;
+  std::string byte_order;
+  std::string file_type;
+  std::string machine;
+  std::string os_abi;
+};
+
 struct ExpandedNode {
   std::string path;
   std::string display_name;
@@ -142,6 +150,7 @@ struct ProjectSummary {
 
 struct ProjectModel {
   std::string file;
+  ElfFileInfo elf_info;
   std::vector<CompileUnitRecord> compile_units;
   std::vector<TypeNode> types;
   std::vector<VariableRecord> symbols;
@@ -165,6 +174,10 @@ struct DumpOptions {
   bool only_static_known = false;
   std::optional<std::string> symbol_name;
   std::size_t expand_depth = 8;
+};
+
+struct SnapshotExportOptions {
+  bool include_sensitive_info = true;
 };
 
 std::string to_string(AddressKind value);

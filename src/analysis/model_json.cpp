@@ -426,6 +426,25 @@ void append_compile_unit_record(std::ostringstream& stream, const CompileUnitRec
   stream << '}';
 }
 
+void append_elf_file_info(std::ostringstream& stream,
+                          const ElfFileInfo& info,
+                          const int level,
+                          const bool trailing_comma = true) {
+  append_indent(stream, level);
+  stream << "{\n";
+  append_string_field(stream, "object_class", info.object_class, level + 1);
+  append_string_field(stream, "byte_order", info.byte_order, level + 1);
+  append_string_field(stream, "file_type", info.file_type, level + 1);
+  append_string_field(stream, "machine", info.machine, level + 1);
+  append_string_field(stream, "os_abi", info.os_abi, level + 1, false);
+  append_indent(stream, level);
+  stream << '}';
+  if (trailing_comma) {
+    stream << ',';
+  }
+  stream << '\n';
+}
+
 void append_expanded_node(std::ostringstream& stream, const ExpandedNode& node, const int level) {
   append_indent(stream, level);
   stream << "{\n";
@@ -453,6 +472,10 @@ void append_project_model(std::ostringstream& stream,
   append_indent(stream, level);
   stream << "{\n";
   append_string_field(stream, "file", model.file, level + 1);
+  append_indent(stream, level + 1);
+  append_string(stream, "elf_info");
+  stream << ": ";
+  append_elf_file_info(stream, model.elf_info, level + 1);
   append_array(stream, "compile_units", model.compile_units.size(), level + 1, [&](const std::size_t index, const int item_level) {
     append_compile_unit_record(stream, model.compile_units[index], item_level);
   });
@@ -572,6 +595,19 @@ CompileUnitRecord parse_compile_unit_record(const YAML::Node& node) {
   return unit;
 }
 
+ElfFileInfo parse_elf_file_info(const YAML::Node& node) {
+  ElfFileInfo info;
+  if (!node) {
+    return info;
+  }
+  info.object_class = node["object_class"].as<std::string>();
+  info.byte_order = node["byte_order"].as<std::string>();
+  info.file_type = node["file_type"].as<std::string>();
+  info.machine = node["machine"].as<std::string>();
+  info.os_abi = node["os_abi"].as<std::string>();
+  return info;
+}
+
 ExpandedNode parse_expanded_node(const YAML::Node& node) {
   ExpandedNode expanded;
   expanded.path = node["path"].as<std::string>();
@@ -593,6 +629,7 @@ ExpandedNode parse_expanded_node(const YAML::Node& node) {
 ProjectModel parse_project_model(const YAML::Node& node) {
   ProjectModel model;
   model.file = node["file"].as<std::string>();
+  model.elf_info = parse_elf_file_info(node["elf_info"]);
   for (const auto& item : node["compile_units"]) {
     model.compile_units.push_back(parse_compile_unit_record(item));
   }
@@ -620,17 +657,39 @@ ProjectModel parse_dump_json(const std::string& json_text) {
   return parse_project_model(YAML::Load(json_text));
 }
 
-std::string render_snapshot_json(const ProjectSnapshot& snapshot) {
+ProjectSnapshot build_export_snapshot(const ProjectSnapshot& snapshot,
+                                     const SnapshotExportOptions& options) {
+  ProjectSnapshot exported = snapshot;
+  if (options.include_sensitive_info) {
+    return exported;
+  }
+
+  // 仅隐藏路径和编译器指纹等敏感文本，保留地址、类型和展开树，避免影响离线地址分析。
+  exported.source_file = "<redacted>";
+  exported.model.file = "<redacted>";
+  for (auto& unit : exported.model.compile_units) {
+    unit.name.clear();
+    unit.producer.clear();
+  }
+  for (auto& symbol : exported.model.symbols) {
+    symbol.compile_unit_name.clear();
+  }
+  return exported;
+}
+
+std::string render_snapshot_json(const ProjectSnapshot& snapshot,
+                                 const SnapshotExportOptions& options) {
+  const auto exported = build_export_snapshot(snapshot, options);
   std::ostringstream stream;
   stream << "{\n";
-  append_number_field(stream, "schema_version", snapshot.schema_version, 1);
-  append_string_field(stream, "source_kind", snapshot.source_kind, 1);
-  append_string_field(stream, "source_file", snapshot.source_file, 1);
-  append_string_field(stream, "exported_at", snapshot.exported_at, 1);
+  append_number_field(stream, "schema_version", exported.schema_version, 1);
+  append_string_field(stream, "source_kind", exported.source_kind, 1);
+  append_string_field(stream, "source_file", exported.source_file, 1);
+  append_string_field(stream, "exported_at", exported.exported_at, 1);
   append_indent(stream, 1);
   append_string(stream, "model");
   stream << ": ";
-  append_project_model(stream, snapshot.model, 1, false);
+  append_project_model(stream, exported.model, 1, false);
   stream << "}\n";
   return stream.str();
 }

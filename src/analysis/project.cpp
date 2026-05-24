@@ -120,6 +120,11 @@ std::string render_scan_text(const ProjectModel& model) {
   const auto summary = summarize(model);
   std::ostringstream stream;
   stream << "file: " << model.file << '\n';
+  stream << "elf_class: " << model.elf_info.object_class << '\n';
+  stream << "byte_order: " << model.elf_info.byte_order << '\n';
+  stream << "file_type: " << model.elf_info.file_type << '\n';
+  stream << "machine: " << model.elf_info.machine << '\n';
+  stream << "os_abi: " << model.elf_info.os_abi << '\n';
   stream << "compile_units: " << summary.compile_unit_count << '\n';
   stream << "types: " << summary.type_count << '\n';
   stream << "symbols: " << summary.symbol_count << '\n';

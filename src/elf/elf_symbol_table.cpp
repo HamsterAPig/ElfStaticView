@@ -218,6 +218,101 @@ ByteOrder parse_byte_order(const ElfIdent& ident) {
   throw std::runtime_error("不支持的 ELF 字节序");
 }
 
+std::string describe_elf_class(const unsigned char elf_class) {
+  switch (elf_class) {
+    case kElfClass32:
+      return "ELF32";
+    case kElfClass64:
+      return "ELF64";
+    default:
+      return "Unknown";
+  }
+}
+
+std::string describe_byte_order(const ByteOrder byte_order) {
+  switch (byte_order) {
+    case ByteOrder::LittleEndian:
+      return "LittleEndian";
+    case ByteOrder::BigEndian:
+      return "BigEndian";
+  }
+  return "Unknown";
+}
+
+std::string describe_file_type(const std::uint16_t type) {
+  switch (type) {
+    case 0:
+      return "NONE";
+    case 1:
+      return "REL";
+    case 2:
+      return "EXEC";
+    case 3:
+      return "DYN";
+    case 4:
+      return "CORE";
+    default:
+      return "OTHER(" + std::to_string(type) + ")";
+  }
+}
+
+std::string describe_machine(const std::uint16_t machine) {
+  switch (machine) {
+    case 0:
+      return "NoMachine";
+    case 3:
+      return "x86";
+    case 40:
+      return "ARM";
+    case 62:
+      return "x86_64";
+    case 183:
+      return "AArch64";
+    case 243:
+      return "RISC-V";
+    default:
+      return "Machine(" + std::to_string(machine) + ")";
+  }
+}
+
+std::string describe_os_abi(const unsigned char os_abi) {
+  switch (os_abi) {
+    case 0:
+      return "SystemV";
+    case 1:
+      return "HP-UX";
+    case 2:
+      return "NetBSD";
+    case 3:
+      return "Linux";
+    case 6:
+      return "Solaris";
+    case 7:
+      return "AIX";
+    case 8:
+      return "IRIX";
+    case 9:
+      return "FreeBSD";
+    case 12:
+      return "OpenBSD";
+    case 64:
+      return "ARM EABI";
+    case 97:
+      return "ARM";
+    default:
+      return "OSABI(" + std::to_string(os_abi) + ")";
+  }
+}
+
+template <typename Header>
+ElfFileMetadata build_metadata(const Header& header, const unsigned char elf_class, const ByteOrder byte_order) {
+  return ElfFileMetadata {.object_class = describe_elf_class(elf_class),
+                          .byte_order = describe_byte_order(byte_order),
+                          .file_type = describe_file_type(header.type),
+                          .machine = describe_machine(header.machine),
+                          .os_abi = describe_os_abi(header.ident[7])};
+}
+
 template <typename Header>
 Header read_header(std::ifstream& input, const ElfIdent& ident, ByteOrder byte_order);
 
@@ -327,9 +422,8 @@ Elf64Symbol read_symbol<Elf64Symbol>(std::ifstream& input, const ByteOrder byte_
 
 template <typename Header, typename Section, typename Symbol>
 std::unordered_map<std::string, SymbolInfo> load_symbol_table(std::ifstream& input,
-                                                              const ElfIdent& ident,
+                                                              const Header& header,
                                                               const ByteOrder byte_order) {
-  const Header header = read_header<Header>(input, ident, byte_order);
   input.seekg(static_cast<std::streamoff>(header.shoff), std::ios::beg);
 
   std::vector<SectionDescriptor> sections;
@@ -389,14 +483,37 @@ ElfSymbolTable ElfSymbolTable::load(const std::string& file_path) {
   ElfSymbolTable table;
   // 按 ELF class 与字节序分派读取逻辑，避免把文件布局误当成本机内存布局。
   if (elf_class == kElfClass32) {
+    const auto header = read_header<Elf32Header>(input, ident, byte_order);
+    table.metadata_ = build_metadata(header, elf_class, byte_order);
     table.symbols_ = load_symbol_table<Elf32Header, Elf32SectionHeader, Elf32Symbol>(
-      input, ident, byte_order);
+      input, header, byte_order);
     return table;
   }
 
+  const auto header = read_header<Elf64Header>(input, ident, byte_order);
+  table.metadata_ = build_metadata(header, elf_class, byte_order);
   table.symbols_ = load_symbol_table<Elf64Header, Elf64SectionHeader, Elf64Symbol>(
-    input, ident, byte_order);
+    input, header, byte_order);
   return table;
+}
+
+ElfFileMetadata ElfSymbolTable::inspect_file(const std::string& file_path) {
+  std::ifstream input(platform::utf8_path(file_path), std::ios::binary);
+  if (!input.is_open()) {
+    throw std::runtime_error("无法打开 ELF 文件: " + file_path);
+  }
+
+  const auto ident = read_ident(input);
+  validate_elf_magic(ident);
+  const auto elf_class = parse_elf_class(ident);
+  const auto byte_order = parse_byte_order(ident);
+  if (elf_class == kElfClass32) {
+    const auto header = read_header<Elf32Header>(input, ident, byte_order);
+    return build_metadata(header, elf_class, byte_order);
+  }
+
+  const auto header = read_header<Elf64Header>(input, ident, byte_order);
+  return build_metadata(header, elf_class, byte_order);
 }
 
 std::optional<SymbolInfo> ElfSymbolTable::find(const std::string& name) const {
@@ -405,6 +522,10 @@ std::optional<SymbolInfo> ElfSymbolTable::find(const std::string& name) const {
     return std::nullopt;
   }
   return iter->second;
+}
+
+const ElfFileMetadata& ElfSymbolTable::metadata() const {
+  return metadata_;
 }
 
 }  // namespace elf_static_view::elf

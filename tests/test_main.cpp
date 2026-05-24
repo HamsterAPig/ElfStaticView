@@ -495,6 +495,67 @@ void verify_elf_symbol_table_endian_matrix() {
   }
 }
 
+void verify_elf_symbol_table_metadata() {
+  const auto bytes = build_symbol_table_fixture(FixtureClass::Elf64, FixtureEndian::Big, 0x1020ULL);
+  const auto path = std::filesystem::temp_directory_path() / "elf_static_view_metadata.bin";
+  {
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+      throw std::runtime_error("无法写入 ELF metadata fixture: " + path.string());
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+
+  std::error_code remove_error;
+  try {
+    const auto metadata = elf_static_view::elf::ElfSymbolTable::inspect_file(path.string());
+    expect_true(metadata.object_class == "ELF64", "应识别 ELF64");
+    expect_true(metadata.byte_order == "BigEndian", "应识别大端");
+    expect_true(metadata.file_type == "REL", "应识别 REL 类型");
+  } catch (...) {
+    std::filesystem::remove(path, remove_error);
+    throw;
+  }
+  std::filesystem::remove(path, remove_error);
+}
+
+void verify_snapshot_export_redaction() {
+  elf_static_view::ProjectSnapshot snapshot;
+  snapshot.source_file = "D:/secret/demo.elf";
+  snapshot.exported_at = "2026-05-24T10:00:00Z";
+  snapshot.model.file = "D:/secret/demo.elf";
+  snapshot.model.elf_info = {.object_class = "ELF64",
+                             .byte_order = "LittleEndian",
+                             .file_type = "EXEC",
+                             .machine = "x86_64",
+                             .os_abi = "SystemV"};
+  snapshot.model.compile_units.push_back(
+    {.id = "cu@0", .name = "D:/src/demo.cpp", .producer = "clang -g -O2", .language = "C++"});
+  elf_static_view::VariableRecord symbol;
+  symbol.id = "sym@0";
+  symbol.name = "demo";
+  symbol.compile_unit_name = "D:/src/demo.cpp";
+  symbol.variable_kind = elf_static_view::VariableKind::Global;
+  symbol.availability = elf_static_view::Availability::StaticAddressKnown;
+  symbol.address.kind = elf_static_view::AddressKind::Absolute;
+  symbol.address.absolute_address = 0x401000;
+  symbol.type.id = "type@0";
+  symbol.scope_path = {"demo"};
+  symbol.has_static_storage = true;
+  snapshot.model.symbols.push_back(symbol);
+
+  const auto redacted = elf_static_view::build_export_snapshot(
+    snapshot, {.include_sensitive_info = false});
+  expect_true(redacted.source_file == "<redacted>", "脱敏快照应隐藏 source_file");
+  expect_true(redacted.model.file == "<redacted>", "脱敏快照应隐藏 model.file");
+  expect_true(redacted.model.compile_units.front().producer.empty(), "脱敏快照应清空 producer");
+  expect_true(redacted.model.compile_units.front().name.empty(), "脱敏快照应清空 CU 名称");
+  expect_true(redacted.model.symbols.front().compile_unit_name.empty(),
+              "脱敏快照应清空变量 compile_unit_name");
+  expect_true(redacted.model.symbols.front().address.absolute_address == 0x401000,
+              "脱敏快照应保留地址信息");
+}
+
 void verify_ui_config_round_trip() {
   const auto temp_root =
     std::filesystem::temp_directory_path() / "elf-static-view-config-round-trip";
@@ -651,6 +712,8 @@ int main() {
     verify_window_title_formatting();
     verify_utf8_path_helpers();
     verify_elf_symbol_table_endian_matrix();
+    verify_elf_symbol_table_metadata();
+    verify_snapshot_export_redaction();
     verify_ui_config_round_trip();
     verify_version_check_resolution();
     verify_version_response_parsing();

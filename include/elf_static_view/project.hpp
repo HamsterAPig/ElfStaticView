@@ -22,8 +22,13 @@ public:
 [[nodiscard]] std::string render_dump_text(const ProjectModel& model, std::int64_t address_bias);
 [[nodiscard]] std::string render_dump_json(const ProjectModel& model);
 [[nodiscard]] ProjectModel parse_dump_json(const std::string& json_text);
-[[nodiscard]] std::string render_snapshot_json(const ProjectSnapshot& snapshot);
+[[nodiscard]] std::string render_snapshot_json(
+    const ProjectSnapshot& snapshot,
+    const SnapshotExportOptions& options = {});
 [[nodiscard]] ProjectSnapshot parse_snapshot_json(const std::string& json_text);
 [[nodiscard]] std::string render_expanded_node_json(const ExpandedNode& node);
+[[nodiscard]] ProjectSnapshot build_export_snapshot(
+    const ProjectSnapshot& snapshot,
+    const SnapshotExportOptions& options = {});
 
 }  // namespace elf_static_view
