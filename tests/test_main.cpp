@@ -53,6 +53,19 @@ std::vector<const elf_static_view::VariableRecord*> find_file_static_variables(
   return matches;
 }
 
+std::vector<const elf_static_view::VariableRecord*> find_variables_by_kind(
+  const elf_static_view::ProjectModel& model,
+  const std::string& name,
+  const elf_static_view::VariableKind kind) {
+  std::vector<const elf_static_view::VariableRecord*> matches;
+  for (const auto& symbol : model.symbols) {
+    if (symbol.name == name && symbol.variable_kind == kind) {
+      matches.push_back(&symbol);
+    }
+  }
+  return matches;
+}
+
 void verify_fixture(const std::string& fixture_path, const std::string& expected_json_path) {
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(fixture_path,
@@ -95,14 +108,41 @@ void verify_multi_cu_file_static_fixture() {
 
   // 这里故意在两个源文件里放同名 file-static 变量，验证解析器不会把不同 CU 的局部符号串成一个。
   expect_true(model.compile_units.size() >= 2, "多 CU fixture 至少应包含两个编译单元");
-  const auto matches = find_file_static_variables(model, "shared_value");
-  expect_true(matches.size() == 2, "应解析出两个同名 file-static 变量");
-  expect_true(matches[0]->compile_unit_name != matches[1]->compile_unit_name,
+  const auto shared_file_statics = find_file_static_variables(model, "shared_value");
+  expect_true(shared_file_statics.size() == 2, "应解析出两个同名 file-static 变量");
+  expect_true(shared_file_statics[0]->compile_unit_name != shared_file_statics[1]->compile_unit_name,
               "两个同名变量应来自不同编译单元");
-  expect_true(matches[0]->address.absolute_address.has_value(), "第一个变量应有绝对地址");
-  expect_true(matches[1]->address.absolute_address.has_value(), "第二个变量应有绝对地址");
-  expect_true(matches[0]->address.absolute_address.value() != matches[1]->address.absolute_address.value(),
+  expect_true(shared_file_statics[0]->address.absolute_address.has_value(), "第一个变量应有绝对地址");
+  expect_true(shared_file_statics[1]->address.absolute_address.has_value(), "第二个变量应有绝对地址");
+  expect_true(shared_file_statics[0]->address.absolute_address.value() !=
+                shared_file_statics[1]->address.absolute_address.value(),
               "两个变量的绝对地址应不同");
+
+  const auto private_file_statics = find_file_static_variables(model, "unit_private_value");
+  expect_true(private_file_statics.size() == 2, "每个 CU 都应解析出自己的 unit_private_value");
+  expect_true(private_file_statics[0]->compile_unit_name != private_file_statics[1]->compile_unit_name,
+              "同名 unit_private_value 不应丢失编译单元边界");
+  expect_true(private_file_statics[0]->address.absolute_address.has_value() &&
+                private_file_statics[1]->address.absolute_address.has_value(),
+              "同名 unit_private_value 应能解析出绝对地址");
+  expect_true(private_file_statics[0]->address.absolute_address.value() !=
+                private_file_statics[1]->address.absolute_address.value(),
+              "不同 CU 的 unit_private_value 地址不应相同");
+
+  const auto function_statics =
+    find_variables_by_kind(model, "shared_counter", elf_static_view::VariableKind::FunctionStatic);
+  expect_true(function_statics.size() == 2, "每个 CU 的函数静态变量都应被解析出来");
+  expect_true(function_statics[0]->compile_unit_name != function_statics[1]->compile_unit_name,
+              "同名函数静态变量应保留编译单元边界");
+  expect_true(function_statics[0]->scope_path != function_statics[1]->scope_path,
+              "同名函数静态变量应保留各自函数作用域");
+  expect_true(function_statics[0]->address.absolute_address.has_value() &&
+                function_statics[1]->address.absolute_address.has_value(),
+              "函数静态变量应解析出绝对地址");
+
+  const auto globals = find_variables_by_kind(model, "shared_global", elf_static_view::VariableKind::Global);
+  expect_true(!globals.empty(), "多 CU fixture 应包含一个可见的全局变量定义");
+  expect_true(globals.front()->address.absolute_address.has_value(), "全局变量定义应解析出绝对地址");
 }
 
 elf_static_view::ExpandedNode make_node(const std::string& path,
