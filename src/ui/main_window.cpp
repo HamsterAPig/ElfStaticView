@@ -44,6 +44,8 @@ const char* localized_type_kind(const TypeKind value) {
       return "指针";
     case TypeKind::Reference:
       return "引用";
+    case TypeKind::MemberPointer:
+      return "成员指针";
     case TypeKind::Typedef:
       return "类型别名";
     case TypeKind::Qualified:
@@ -60,6 +62,10 @@ const char* localized_type_kind(const TypeKind value) {
       return "枚举";
     case TypeKind::Subroutine:
       return "子程序";
+    case TypeKind::Atomic:
+      return "原子类型";
+    case TypeKind::Unspecified:
+      return "未指定类型";
     case TypeKind::Unknown:
       return "未知";
   }
@@ -515,6 +521,17 @@ void render_inspector_panel(AppState& state) {
   if (!ImGui::Begin(kInspectorWindowName)) {
     ImGui::End();
     return;
+  }
+  if (state.project_model.has_value()) {
+    const auto& elf_info = state.project_model->elf_info;
+    ImGui::TextUnformatted("ELF 信息");
+    ImGui::Separator();
+    ImGui::Text("Class: %s", elf_info.object_class.c_str());
+    ImGui::Text("Endian: %s", elf_info.byte_order.c_str());
+    ImGui::Text("Type: %s", elf_info.file_type.c_str());
+    ImGui::Text("Machine: %s", elf_info.machine.c_str());
+    ImGui::Text("OS ABI: %s", elf_info.os_abi.c_str());
+    ImGui::Separator();
   }
   if (state.selected_node == nullptr) {
     ImGui::TextUnformatted("请选择一个节点。");

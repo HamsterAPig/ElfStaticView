@@ -5,9 +5,63 @@
 #include "analysis/model_utils.hpp"
 #include "elf/dwarf_reader.hpp"
 
+#include <exception>
 #include <sstream>
 
 namespace elf_static_view {
+
+namespace {
+
+[[nodiscard]] std::string build_load_error_message(const std::string& file_path,
+                                                   const std::exception& error) {
+  std::ostringstream stream;
+  stream << "文件分析失败: " << file_path << " | " << error.what();
+  return stream.str();
+}
+
+void append_elf_info_lines(std::ostringstream& stream, const ProjectModel& model) {
+  stream << "elf_class: " << model.elf_info.object_class << '\n';
+  stream << "byte_order: " << model.elf_info.byte_order << '\n';
+  stream << "file_type: " << model.elf_info.file_type << '\n';
+  stream << "machine: " << model.elf_info.machine << '\n';
+  stream << "os_abi: " << model.elf_info.os_abi << '\n';
+}
+
+void append_location_range_suffix(std::ostringstream& stream, const AddressInfo& address) {
+  if (address.location_ranges.empty()) {
+    return;
+  }
+  stream << " ranges=";
+  for (std::size_t index = 0; index < address.location_ranges.size(); ++index) {
+    const auto& range = address.location_ranges[index];
+    if (index > 0) {
+      stream << ',';
+    }
+    stream << '[';
+    if (range.cooked_low_pc.has_value()) {
+      stream << "0x" << std::hex << range.cooked_low_pc.value();
+    } else if (range.raw_low_pc.has_value()) {
+      stream << "raw:0x" << std::hex << range.raw_low_pc.value();
+    } else {
+      stream << '?';
+    }
+    stream << "..";
+    if (range.cooked_high_pc.has_value()) {
+      stream << "0x" << std::hex << range.cooked_high_pc.value();
+    } else if (range.raw_high_pc.has_value()) {
+      stream << "raw:0x" << std::hex << range.raw_high_pc.value();
+    } else {
+      stream << '?';
+    }
+    if (range.debug_addr_unavailable) {
+      stream << " unavailable";
+    }
+    stream << ']';
+    stream << std::dec;
+  }
+}
+
+}  // namespace
 
 std::string to_string(AddressKind value) {
   switch (value) {
@@ -51,6 +105,8 @@ std::string to_string(TypeKind value) {
       return "Pointer";
     case TypeKind::Reference:
       return "Reference";
+    case TypeKind::MemberPointer:
+      return "MemberPointer";
     case TypeKind::Typedef:
       return "Typedef";
     case TypeKind::Qualified:
@@ -67,6 +123,10 @@ std::string to_string(TypeKind value) {
       return "Enum";
     case TypeKind::Subroutine:
       return "Subroutine";
+    case TypeKind::Atomic:
+      return "Atomic";
+    case TypeKind::Unspecified:
+      return "Unspecified";
     case TypeKind::Unknown:
       return "Unknown";
   }
@@ -99,7 +159,12 @@ std::string to_string(VariableKind value) {
 
 ProjectModel ProjectLoader::scan(const std::string& file_path, const ScanOptions& options) const {
   elf::DwarfReader reader;
-  auto model = reader.load(file_path);
+  ProjectModel model;
+  try {
+    model = reader.load(file_path);
+  } catch (const std::exception& error) {
+    throw std::runtime_error(build_load_error_message(file_path, error));
+  }
   analysis::Expander expander(model.types, 6);
   model.expanded = expander.build(model.symbols, options.include_runtime_only, false, std::nullopt);
   return model;
@@ -107,7 +172,12 @@ ProjectModel ProjectLoader::scan(const std::string& file_path, const ScanOptions
 
 ProjectModel ProjectLoader::dump(const std::string& file_path, const DumpOptions& options) const {
   elf::DwarfReader reader;
-  auto model = reader.load(file_path);
+  ProjectModel model;
+  try {
+    model = reader.load(file_path);
+  } catch (const std::exception& error) {
+    throw std::runtime_error(build_load_error_message(file_path, error));
+  }
   analysis::Expander expander(model.types, options.expand_depth);
   model.expanded = expander.build(model.symbols,
                                   options.include_runtime_only,
@@ -120,11 +190,7 @@ std::string render_scan_text(const ProjectModel& model) {
   const auto summary = summarize(model);
   std::ostringstream stream;
   stream << "file: " << model.file << '\n';
-  stream << "elf_class: " << model.elf_info.object_class << '\n';
-  stream << "byte_order: " << model.elf_info.byte_order << '\n';
-  stream << "file_type: " << model.elf_info.file_type << '\n';
-  stream << "machine: " << model.elf_info.machine << '\n';
-  stream << "os_abi: " << model.elf_info.os_abi << '\n';
+  append_elf_info_lines(stream, model);
   stream << "compile_units: " << summary.compile_unit_count << '\n';
   stream << "types: " << summary.type_count << '\n';
   stream << "symbols: " << summary.symbol_count << '\n';
@@ -136,15 +202,30 @@ std::string render_scan_text(const ProjectModel& model) {
 
 namespace {
 
+[[nodiscard]] const VariableRecord* find_symbol_by_path(const ProjectModel& model,
+                                                        const std::string& path) {
+  for (const auto& symbol : model.symbols) {
+    if (analysis::join_scope(symbol.scope_path, symbol.name) == path) {
+      return &symbol;
+    }
+  }
+  return nullptr;
+}
+
 void render_expanded_text(const ExpandedNode& node,
                           const int level,
                           const std::optional<std::int64_t> address_bias,
+                          const ProjectModel& model,
                           std::ostringstream& stream) {
   for (int i = 0; i < level; ++i) {
     stream << "  ";
   }
   stream << "- " << node.path << " [" << to_string(node.availability) << "] "
          << node.type_name;
+  if (const auto* symbol = find_symbol_by_path(model, node.path);
+      symbol != nullptr && !symbol->address.location_ranges.empty()) {
+    append_location_range_suffix(stream, symbol->address);
+  }
   if (node.absolute_address.has_value()) {
     if (address_bias.has_value()) {
       stream << " @" << format_address_summary(node, address_bias.value());
@@ -152,9 +233,16 @@ void render_expanded_text(const ExpandedNode& node,
       stream << " @0x" << std::hex << node.absolute_address.value() << std::dec;
     }
   }
+  if (const auto* symbol = find_symbol_by_path(model, node.path);
+      symbol != nullptr && symbol->const_value.has_value()) {
+    stream << " = " << symbol->const_value.value();
+  } else if (const auto* symbol = find_symbol_by_path(model, node.path);
+             symbol != nullptr && symbol->const_value_text.has_value()) {
+    stream << " = " << symbol->const_value_text.value();
+  }
   stream << '\n';
   for (const auto& child : node.children) {
-    render_expanded_text(child, level + 1, address_bias, stream);
+    render_expanded_text(child, level + 1, address_bias, model, stream);
   }
 }
 
@@ -162,8 +250,9 @@ std::string render_dump_text_with_bias(const ProjectModel& model,
                                        const std::optional<std::int64_t> address_bias) {
   std::ostringstream stream;
   stream << "file: " << model.file << '\n';
+  append_elf_info_lines(stream, model);
   for (const auto& node : model.expanded) {
-    render_expanded_text(node, 0, address_bias, stream);
+    render_expanded_text(node, 0, address_bias, model, stream);
   }
   return stream.str();
 }

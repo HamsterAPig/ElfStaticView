@@ -163,6 +163,22 @@ std::string read_c_string(const std::vector<char>& table, const std::uint32_t of
   return std::string(table.data() + offset);
 }
 
+std::vector<char> read_section_data(std::ifstream& input, const SectionDescriptor& descriptor) {
+  if (descriptor.size == 0) {
+    return {};
+  }
+  input.seekg(static_cast<std::streamoff>(descriptor.offset), std::ios::beg);
+  if (!input) {
+    throw std::runtime_error("定位节数据失败");
+  }
+  std::vector<char> data(static_cast<std::size_t>(descriptor.size));
+  input.read(data.data(), static_cast<std::streamsize>(data.size()));
+  if (!input) {
+    throw std::runtime_error("读取节数据失败");
+  }
+  return data;
+}
+
 SectionDescriptor to_descriptor(const Elf32SectionHeader& section) {
   return SectionDescriptor {.type = section.type,
                             .offset = section.offset,
@@ -467,6 +483,44 @@ std::unordered_map<std::string, SymbolInfo> load_symbol_table(std::ifstream& inp
   return symbols;
 }
 
+template <typename Header, typename Section>
+std::optional<std::vector<std::uint8_t>> load_section_bytes(std::ifstream& input,
+                                                            const Header& header,
+                                                            const ByteOrder byte_order,
+                                                            const std::string& section_name) {
+  input.seekg(static_cast<std::streamoff>(header.shoff), std::ios::beg);
+
+  std::vector<SectionDescriptor> sections;
+  sections.reserve(header.shnum);
+  for (std::uint16_t index = 0; index < header.shnum; ++index) {
+    sections.push_back(to_descriptor(read_section_header<Section>(input, byte_order)));
+  }
+  if (header.shstrndx >= sections.size()) {
+    return std::nullopt;
+  }
+
+  input.seekg(static_cast<std::streamoff>(sections[header.shstrndx].offset), std::ios::beg);
+  std::vector<char> string_table(static_cast<std::size_t>(sections[header.shstrndx].size));
+  input.read(string_table.data(), static_cast<std::streamsize>(string_table.size()));
+  if (!input) {
+    throw std::runtime_error("读取节名字符串表失败");
+  }
+
+  for (std::size_t index = 0; index < sections.size(); ++index) {
+    const auto section_header_offset =
+      static_cast<std::streamoff>(header.shoff + static_cast<std::uint64_t>(index) * header.shentsize);
+    input.seekg(section_header_offset, std::ios::beg);
+    const auto section = read_section_header<Section>(input, byte_order);
+    if (read_c_string(string_table, section.name) != section_name) {
+      continue;
+    }
+    const auto raw = read_section_data(input, to_descriptor(section));
+    return std::vector<std::uint8_t>(raw.begin(), raw.end());
+  }
+
+  return std::nullopt;
+}
+
 }  // namespace
 
 ElfSymbolTable ElfSymbolTable::load(const std::string& file_path) {
@@ -514,6 +568,33 @@ ElfFileMetadata ElfSymbolTable::inspect_file(const std::string& file_path) {
 
   const auto header = read_header<Elf64Header>(input, ident, byte_order);
   return build_metadata(header, elf_class, byte_order);
+}
+
+std::optional<std::vector<std::uint8_t>> ElfSymbolTable::read_section_bytes(
+  const std::string& file_path,
+  const std::string& section_name) {
+  std::ifstream input(platform::utf8_path(file_path), std::ios::binary);
+  if (!input.is_open()) {
+    throw std::runtime_error("无法打开 ELF 文件: " + file_path);
+  }
+
+  const auto ident = read_ident(input);
+  validate_elf_magic(ident);
+  const auto elf_class = parse_elf_class(ident);
+  const auto byte_order = parse_byte_order(ident);
+  if (elf_class == kElfClass32) {
+    const auto header = read_header<Elf32Header>(input, ident, byte_order);
+    return load_section_bytes<Elf32Header, Elf32SectionHeader>(input,
+                                                               header,
+                                                               byte_order,
+                                                               section_name);
+  }
+
+  const auto header = read_header<Elf64Header>(input, ident, byte_order);
+  return load_section_bytes<Elf64Header, Elf64SectionHeader>(input,
+                                                             header,
+                                                             byte_order,
+                                                             section_name);
 }
 
 std::optional<SymbolInfo> ElfSymbolTable::find(const std::string& name) const {

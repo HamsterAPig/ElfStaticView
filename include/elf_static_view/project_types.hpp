@@ -29,6 +29,7 @@ enum class TypeKind {
   Base,
   Pointer,
   Reference,
+  MemberPointer,
   Typedef,
   Qualified,
   Array,
@@ -37,6 +38,8 @@ enum class TypeKind {
   Union,
   Enum,
   Subroutine,
+  Atomic,
+  Unspecified,
   Unknown,
 };
 
@@ -53,6 +56,14 @@ enum class VariableKind {
 };
 
 struct AddressInfo {
+  struct LocationRange {
+    std::optional<std::uint64_t> raw_low_pc;
+    std::optional<std::uint64_t> raw_high_pc;
+    std::optional<std::uint64_t> cooked_low_pc;
+    std::optional<std::uint64_t> cooked_high_pc;
+    bool debug_addr_unavailable = false;
+  };
+
   AddressKind kind = AddressKind::Unknown;
   std::optional<std::uint64_t> absolute_address;
   std::optional<std::int64_t> relative_offset;
@@ -60,6 +71,8 @@ struct AddressInfo {
   std::optional<std::uint64_t> bit_offset;
   std::optional<std::uint64_t> bit_size;
   std::string location_description;
+  std::optional<std::uint64_t> location_entry_count;
+  std::vector<LocationRange> location_ranges;
 };
 
 struct TypeRef {
@@ -106,6 +119,8 @@ struct VariableRecord {
   TypeRef type;
   std::vector<std::string> scope_path;
   std::optional<std::uint64_t> byte_size;
+  std::optional<std::int64_t> const_value;
+  std::optional<std::string> const_value_text;
   bool is_thread_local = false;
   bool has_static_storage = false;
 };
@@ -115,6 +130,7 @@ struct CompileUnitRecord {
   std::string name;
   std::string producer;
   std::string language;
+  AddressInfo address;
 };
 
 struct ElfFileInfo {
