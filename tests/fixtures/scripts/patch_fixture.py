@@ -51,6 +51,58 @@ def write_u32(data: bytearray, offset: int, value: int) -> None:
     data[offset : offset + 4] = u32(value)
 
 
+def encode_uleb128(value: int) -> bytes:
+    if value < 0:
+        raise PatchError("ULEB128 仅支持非负整数")
+    encoded = bytearray()
+    current = value
+    while True:
+        byte = current & 0x7F
+        current >>= 7
+        if current:
+            encoded.append(byte | 0x80)
+            continue
+        encoded.append(byte)
+        break
+    return bytes(encoded)
+
+
+def build_small_ref_payload(mode: str, original_ref_value: int) -> bytes:
+    if mode == "ref1":
+        if not 0 <= original_ref_value <= 0xFF:
+            raise PatchError("ref1 目标偏移超出 1 字节范围")
+        return bytes([original_ref_value])
+    if mode == "ref2":
+        if not 0 <= original_ref_value <= 0xFFFF:
+            raise PatchError("ref2 目标偏移超出 2 字节范围")
+        return original_ref_value.to_bytes(2, "little")
+    if mode == "ref_udata":
+        return encode_uleb128(original_ref_value)
+    raise PatchError("Mode 必须是 ref1/ref2/ref_udata")
+
+
+def find_dwarf5_compile_units(debug_info: bytes | bytearray) -> list[tuple[int, int]]:
+    units: list[tuple[int, int]] = []
+    offset = 0
+    while offset + 12 <= len(debug_info):
+        unit_length = read_u32(debug_info, offset)
+        if unit_length == 0xFFFFFFFF:
+            raise PatchError("暂不支持 DWARF64 fixture 自动定位 CU header")
+        next_offset = offset + 4 + unit_length
+        if unit_length == 0 or next_offset > len(debug_info):
+            raise PatchError(".debug_info 中 CU length 越界，无法定位后续 CU")
+        version = struct.unpack_from("<H", debug_info, offset + 4)[0]
+        unit_type = debug_info[offset + 6]
+        address_size = debug_info[offset + 7]
+        if version != 5 or unit_type == 0 or address_size not in (4, 8):
+            raise PatchError(".debug_info 中发现非预期 DWARF5 CU header")
+        units.append((offset, read_u32(debug_info, offset + 8)))
+        offset = next_offset
+    if offset != len(debug_info):
+        raise PatchError(".debug_info 尾部存在未解析字节，无法可靠定位 CU header")
+    return units
+
+
 def run_tool(args: list[str], message: str) -> None:
     try:
         subprocess.run(args, check=True)
@@ -159,23 +211,23 @@ def patch_rnglists_payload(args: argparse.Namespace, payload: bytes) -> None:
 
 
 def patch_rnglists_start_end(args: argparse.Namespace) -> None:
-    patch_rnglists_payload(args, bytes([0x07, 0x00, 0x00, 0x00, 0x00, 0x18, 0x11, 0x40, 0x00, 0x00, 0x00, 0x00, 0x23, 0x11, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00]))
+    patch_rnglists_payload(args, bytes([0x06, 0x18, 0x11, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x23, 0x11, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]))
 
 
 def patch_rnglists_offset_pair(args: argparse.Namespace) -> None:
-    patch_rnglists_payload(args, bytes([0x05, 0x18, 0x23, 0x00]))
+    patch_rnglists_payload(args, bytes([0x05, 0x00, 0x11, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x18, 0x23, 0x00]))
 
 
 def patch_rnglists_base_addressx(args: argparse.Namespace) -> None:
-    patch_rnglists_payload(args, bytes([0x02, 0x00, 0x05, 0x18, 0x23, 0x00]))
+    patch_rnglists_payload(args, bytes([0x01, 0x00, 0x04, 0x18, 0x23, 0x00]))
 
 
 def patch_rnglists_startx_endx(args: argparse.Namespace) -> None:
-    patch_rnglists_payload(args, bytes([0x03, 0x00, 0x01, 0x00]))
+    patch_rnglists_payload(args, bytes([0x02, 0x00, 0x01, 0x00]))
 
 
 def patch_rnglists_startx_length(args: argparse.Namespace) -> None:
-    patch_rnglists_payload(args, bytes([0x04, 0x00, 0x0B, 0x00]))
+    patch_rnglists_payload(args, bytes([0x03, 0x00, 0x0B, 0x00]))
 
 def insert_loclist_prefix(args: argparse.Namespace, insert: bytes, prefix: str) -> None:
     with tempfile.TemporaryDirectory(prefix=prefix) as temp:
@@ -365,13 +417,13 @@ def patch_gcc_ref8_to_ref_sup8(args: argparse.Namespace) -> None:
 
 def patch_gcc_ref4_to_small_ref(args: argparse.Namespace) -> None:
     modes = {
-        "ref1": (0x11, bytes([0x74])),
-        "ref2": (0x12, bytes([0x74, 0x00])),
-        "ref_udata": (0x15, bytes([0x74])),
+        "ref1": 0x11,
+        "ref2": 0x12,
+        "ref_udata": 0x15,
     }
     if args.mode not in modes:
         raise PatchError("Mode 必须是 ref1/ref2/ref_udata")
-    form_byte, new_payload = modes[args.mode]
+    form_byte = modes[args.mode]
     with tempfile.TemporaryDirectory(prefix="elf-static-view-gcc-small-ref-") as temp:
         sections = dump_sections(args.objcopy_path, args.input_path, Path(temp), [".debug_abbrev", ".debug_info"])
         abbrev = read_bytes(sections[".debug_abbrev"])
@@ -381,9 +433,21 @@ def patch_gcc_ref4_to_small_ref(args: argparse.Namespace) -> None:
             raise PatchError("未找到 gcc variable ref4 abbrev 模板")
         abbrev[match + 12] = form_byte
         debug_info = read_bytes(sections[".debug_info"])
-        type_field_offset = 0x0000009E + 1 + 10 + 1 + 1 + 1
+        # 先用 sup_value 的唯一字符串定位变量 DIE，再推算 DW_AT_type 的 payload 起点。
+        name_marker = b"sup_value\x00"
+        name_offset = find_pattern(debug_info, name_marker)
+        if name_offset < 0:
+            raise PatchError("未找到 sup_value 字符串，无法定位变量 DIE")
+        if find_pattern(debug_info, name_marker, name_offset + 1) >= 0:
+            raise PatchError("sup_value 字符串出现多次，无法唯一定位变量 DIE")
+        type_field_offset = name_offset + len(name_marker) + 1 + 1 + 1
+        if type_field_offset + 4 > len(debug_info):
+            raise PatchError(".debug_info 长度不足，无法读取原始 ref4 偏移")
+        original_ref_value = read_u32(debug_info, type_field_offset)
+        new_payload = build_small_ref_payload(args.mode, original_ref_value)
         patched_info = splice_bytes(debug_info, type_field_offset, 4, new_payload)
-        write_u32(patched_info, 0, read_u32(patched_info, 0) - (4 - len(new_payload)))
+        # 仅替换单个 DW_AT_type payload，因此 CU 长度只需要按字节差值同步修正。
+        write_u32(patched_info, 0, read_u32(debug_info, 0) + len(new_payload) - 4)
         write_bytes(sections[".debug_abbrev"], abbrev)
         write_bytes(sections[".debug_info"], patched_info)
         update_sections(args.objcopy_path, args.input_path, args.output_path, {".debug_abbrev": sections[".debug_abbrev"], ".debug_info": sections[".debug_info"]}, "回写 .debug_abbrev/.debug_info 失败")
@@ -488,21 +552,31 @@ def patch_gcc_gnu_altlink(args: argparse.Namespace) -> None:
         abbrev = read_bytes(sections[".debug_abbrev"])
         strp_pattern = bytes([0x01, 0x11, 0x00, 0x10, 0x17, 0x11, 0x01, 0x12, 0x0F, 0x03, 0x0E, 0x1B, 0x0E, 0x25, 0x0E, 0x13, 0x05, 0x00, 0x00])
         strp_replacement = bytes([0x01, 0x11, 0x00, 0x10, 0x17, 0x11, 0x01, 0x12, 0x0F, 0x03, 0xA1, 0x3E, 0x1B, 0xA1, 0x3E, 0x25, 0xA1, 0x3E, 0x13, 0x05, 0x00, 0x00])
-        match = find_pattern(abbrev, strp_pattern)
-        if match < 0:
+        strp_match = find_pattern(abbrev, strp_pattern)
+        if strp_match < 0:
             raise PatchError("未找到 gcc 第二个 compile_unit 的 strp abbrev 模板")
-        abbrev = bytearray(abbrev[:match]) + bytearray(strp_replacement) + abbrev[match + len(strp_pattern) :]
+        abbrev = bytearray(abbrev[:strp_match]) + bytearray(strp_replacement) + abbrev[strp_match + len(strp_pattern) :]
         ref4_pattern = bytes([0x05, 0x34, 0x00, 0x03, 0x08, 0x3A, 0x0B, 0x3B, 0x0B, 0x39, 0x0B, 0x49, 0x13, 0x02, 0x18, 0x00, 0x00])
         ref4_replacement = bytes([0x05, 0x34, 0x00, 0x03, 0x08, 0x3A, 0x0B, 0x3B, 0x0B, 0x39, 0x0B, 0x49, 0xA0, 0x3E, 0x02, 0x18, 0x00, 0x00])
-        match = find_pattern(abbrev, ref4_pattern)
-        if match < 0:
+        ref4_match = find_pattern(abbrev, ref4_pattern)
+        if ref4_match < 0:
             raise PatchError("未找到 gcc variable ref4 abbrev 模板")
-        abbrev = bytearray(abbrev[:match]) + bytearray(ref4_replacement) + abbrev[match + len(ref4_pattern) :]
+        abbrev = bytearray(abbrev[:ref4_match]) + bytearray(ref4_replacement) + abbrev[ref4_match + len(ref4_pattern) :]
         debug_info = read_bytes(sections[".debug_info"])
-        if len(debug_info) < 0x11B:
-            raise PatchError(".debug_info 长度不足，无法修正后续 CU 的 abbrev_offset")
-        write_u32(debug_info, 0x00E2, 0x6C)
-        write_u32(debug_info, 0x010A, 0x83)
+        units = find_dwarf5_compile_units(debug_info)
+        if len(units) < 3:
+            raise PatchError(".debug_info 中 CU 数量不足，无法修正后续 CU 的 abbrev_offset")
+        # 替换 abbrev 模板会改变 section 内偏移，后续 CU header 必须同步指向新位置。
+        def adjusted_abbrev_offset(original_offset: int) -> int:
+            adjusted = original_offset
+            if ref4_match < original_offset:
+                adjusted += len(ref4_replacement) - len(ref4_pattern)
+            if strp_match < original_offset:
+                adjusted += len(strp_replacement) - len(strp_pattern)
+            return adjusted
+
+        write_u32(debug_info, units[1][0] + 8, adjusted_abbrev_offset(units[1][1]))
+        write_u32(debug_info, units[2][0] + 8, adjusted_abbrev_offset(units[2][1]))
         content = bytearray(alt_file_name.encode("ascii"))
         content.append(0)
         while len(content) % 4 != 0:
