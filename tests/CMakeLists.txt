@@ -169,14 +169,14 @@ function(add_objcopy_elf_fixture target source_file compiler language_standard o
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
-function(add_patched_elf_fixture target input_file script_file)
+function(add_patched_elf_fixture target input_file patch_command)
   set(output_file "${FIXTURE_OUTPUT_DIR}/${target}")
   add_custom_command(
     OUTPUT "${output_file}"
     COMMAND
       "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/scripts/patch_fixture.py"
-      "${CMAKE_CURRENT_SOURCE_DIR}/${script_file}"
+      "${patch_command}"
       "-InputPath"
       "${input_file}"
       "-OutputPath"
@@ -184,7 +184,6 @@ function(add_patched_elf_fixture target input_file script_file)
       ${ARGN}
     DEPENDS
       "${input_file}"
-      "${CMAKE_CURRENT_SOURCE_DIR}/${script_file}"
       "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/scripts/patch_fixture.py"
     VERBATIM
     COMMENT "Building patched ELF fixture ${target}"
@@ -314,35 +313,35 @@ endfunction()
 add_gcc_dwarf5_objcopy_fixture(static_vars_c.elf fixtures/c/static_vars.c "-x c")
 add_gcc_dwarf5_objcopy_fixture(atomic_type.elf fixtures/c/atomic_type.c "-x c")
 add_linux_elf_fixture(static_vars_cpp.elf fixtures/cpp/static_vars.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
-add_patched_elf_fixture(gnu_addr_index.elf "${static_vars_cpp.elf_OUTPUT}" fixtures/scripts/patch_addrx_to_gnu_addr_index.ps1)
+add_patched_elf_fixture(gnu_addr_index.elf "${static_vars_cpp.elf_OUTPUT}" patch_addrx_to_gnu_addr_index)
 add_gcc_dwarf5_objcopy_fixture(gcc_dwarf5_strp.elf fixtures/cpp/debug_sup_minimal.cpp "-std=c++20")
 add_gcc_dwarf64_objcopy_fixture(gcc_dwarf64_ref8.elf fixtures/cpp/debug_sup_minimal.cpp "-std=c++20")
 add_linux_elf_fixture(inline_scope_static.elf fixtures/cpp/inline_scope_static.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
 add_linux_elf_fixture(const_value_piece.elf fixtures/cpp/const_value_piece.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O2")
 add_linux_elf_fixture(piece_stack_value.elf fixtures/cpp/piece_stack_value.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O2")
 add_objcopy_elf_fixture(bit_piece_gcc.elf fixtures/cpp/bit_piece_gcc.cpp "${ELF_STATIC_VIEW_GXX}" "-std=c++20" "elf64-x86-64")
-add_patched_elf_fixture(rnglistx_bit_piece.elf "${bit_piece_gcc.elf_OUTPUT}" fixtures/scripts/patch_ranges_to_rnglistx.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(rnglists_start_end_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" fixtures/scripts/patch_rnglists_start_end.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(rnglists_offset_pair_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" fixtures/scripts/patch_rnglists_offset_pair.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(rnglists_base_addressx_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" fixtures/scripts/patch_rnglists_base_addressx.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(rnglists_startx_endx_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" fixtures/scripts/patch_rnglists_startx_endx.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(rnglists_startx_length_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" fixtures/scripts/patch_rnglists_startx_length.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(rnglistx_bit_piece.elf "${bit_piece_gcc.elf_OUTPUT}" patch_ranges_to_rnglistx -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(rnglists_start_end_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" patch_rnglists_start_end -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(rnglists_offset_pair_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" patch_rnglists_offset_pair -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(rnglists_base_addressx_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" patch_rnglists_base_addressx -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(rnglists_startx_endx_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" patch_rnglists_startx_endx -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(rnglists_startx_length_bit_piece.elf "${rnglistx_bit_piece.elf_OUTPUT}" patch_rnglists_startx_length -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_linux_elf_fixture(ref_sig8_debug_types_base.elf fixtures/cpp/ref_sig8_debug_types.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-4" "-fdebug-types-section" "-O0")
-add_patched_elf_fixture(ref_sig8_debug_types.elf "${ref_sig8_debug_types_base.elf_OUTPUT}" fixtures/scripts/patch_ref_sig8_debug_types.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(ref_sig8_debug_types_indirect.elf "${ref_sig8_debug_types.elf_OUTPUT}" fixtures/scripts/patch_debug_types_name_indirect.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(ref_sig8_debug_types.elf "${ref_sig8_debug_types_base.elf_OUTPUT}" patch_ref_sig8_debug_types -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(ref_sig8_debug_types_indirect.elf "${ref_sig8_debug_types.elf_OUTPUT}" patch_debug_types_name_indirect -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_linux_elf_fixture(dwarf5_strx_type_unit.elf fixtures/cpp/dwarf5_strx_type_unit.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-fdebug-types-section" "-fdebug-default-version=5" "-O0")
-add_patched_elf_fixture(dwarf5_strx_type_unit_abbrev_offset.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_type_unit_abbrev_offset.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(dwarf5_strx2_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_dwarf5_strx_form.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode strx2)
-add_patched_elf_fixture(dwarf5_strx3_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_dwarf5_strx_form.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode strx3)
-add_patched_elf_fixture(dwarf5_strx4_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_dwarf5_strx_form.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode strx4)
-add_patched_elf_fixture(dwarf5_addrx1_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_dwarf5_addrx_form.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx1)
-add_patched_elf_fixture(dwarf5_addrx2_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_dwarf5_addrx_form.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx2)
-add_patched_elf_fixture(dwarf5_addrx3_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_dwarf5_addrx_form.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx3)
-add_patched_elf_fixture(dwarf5_addrx4_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" fixtures/scripts/patch_dwarf5_addrx_form.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx4)
+add_patched_elf_fixture(dwarf5_strx_type_unit_abbrev_offset.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_type_unit_abbrev_offset -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(dwarf5_strx2_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_strx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode strx2)
+add_patched_elf_fixture(dwarf5_strx3_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_strx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode strx3)
+add_patched_elf_fixture(dwarf5_strx4_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_strx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode strx4)
+add_patched_elf_fixture(dwarf5_addrx1_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_addrx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx1)
+add_patched_elf_fixture(dwarf5_addrx2_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_addrx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx2)
+add_patched_elf_fixture(dwarf5_addrx3_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_addrx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx3)
+add_patched_elf_fixture(dwarf5_addrx4_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_addrx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode addrx4)
 add_linux_split_dwarf_fixture(split_dwarf_static.elf fixtures/cpp/split_dwarf_static.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
 add_dwp_fixture(split_dwarf_static.dwp "${split_dwarf_static.elf_SIDECAR_OUTPUT}")
 add_dwarfgen_debug_sup_fixture(debug_sup_from_obj.elf "${static_vars_cpp.elf_OUTPUT}")
-add_patched_elf_fixture(debug_sup_sidecar.elf "${static_vars_cpp.elf_OUTPUT}" fixtures/scripts/build_debug_sup_sidecar.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(debug_sup_sidecar.elf "${static_vars_cpp.elf_OUTPUT}" build_debug_sup_sidecar -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_custom_command(
   OUTPUT "${FIXTURE_OUTPUT_DIR}/debug_sup_gcc_strp_sup.bin"
   COMMAND
@@ -359,53 +358,53 @@ add_custom_target(debug_sup_gcc_strp_sup.bin_fixture DEPENDS "${FIXTURE_OUTPUT_D
 add_patched_elf_fixture(
   gcc_dwarf5_strp_sup.elf
   "${gcc_dwarf5_strp.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_strp_to_strp_sup.ps1
+  patch_gcc_strp_to_strp_sup
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
   -DebugSupBytesPath "${FIXTURE_OUTPUT_DIR}/debug_sup_gcc_strp_sup.bin"
 )
 add_patched_elf_fixture(
   gcc_dwarf5_ref_sup4.elf
   "${gcc_dwarf5_strp_sup.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_ref4_to_ref_sup4.ps1
+  patch_gcc_ref4_to_ref_sup4
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
 )
 add_patched_elf_fixture(
   gcc_dwarf5_ref_addr.elf
   "${gcc_dwarf5_strp.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_ref4_to_ref_addr.ps1
+  patch_gcc_ref4_to_ref_addr
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
 )
 add_patched_elf_fixture(
   gcc_dwarf5_ref1.elf
   "${gcc_dwarf5_strp.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_ref4_to_small_ref.ps1
+  patch_gcc_ref4_to_small_ref
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
   -Mode ref1
 )
 add_patched_elf_fixture(
   gcc_dwarf5_ref2.elf
   "${gcc_dwarf5_strp.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_ref4_to_small_ref.ps1
+  patch_gcc_ref4_to_small_ref
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
   -Mode ref2
 )
 add_patched_elf_fixture(
   gcc_dwarf5_ref_udata.elf
   "${gcc_dwarf5_strp.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_ref4_to_small_ref.ps1
+  patch_gcc_ref4_to_small_ref
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
   -Mode ref_udata
 )
 add_patched_elf_fixture(
   gcc_dwarf64_ref_sup8.elf
   "${gcc_dwarf64_ref8.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_ref8_to_ref_sup8.ps1
+  patch_gcc_ref8_to_ref_sup8
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
 )
 add_patched_elf_fixture(
   gcc_gnu_alt.elf
   "${gcc_dwarf5_strp.elf_OUTPUT}"
-  fixtures/scripts/patch_gcc_gnu_altlink.ps1
+  patch_gcc_gnu_altlink
   -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}"
   -AltFileName "gcc_dwarf5_strp.elf"
 )
@@ -413,12 +412,12 @@ add_linux_elf_fixture(unspecified_type.elf fixtures/cpp/unspecified_type.cpp "${
 add_linux_elf_fixture(class_array_nested_expand.elf fixtures/cpp/class_array_nested_expand.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
 add_linux_elf_fixture(abstract_origin_values.elf fixtures/cpp/abstract_origin_values.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O2")
 add_linux_elf_fixture(dwarf5_loclists.elf fixtures/cpp/dwarf5_loclists.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-O2")
-add_patched_elf_fixture(dwarf5_loclists_base_default.elf "${dwarf5_loclists.elf_OUTPUT}" fixtures/scripts/patch_loclists_base_default.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(dwarf5_loclists_base_addressx.elf "${dwarf5_loclists.elf_OUTPUT}" fixtures/scripts/patch_loclists_base_addressx.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(dwarf5_loclists_start_end.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" fixtures/scripts/patch_loclists_start_end.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(dwarf5_loclists_startx_endx.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" fixtures/scripts/patch_loclists_startx_endx.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(dwarf5_loclists_startx_length.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" fixtures/scripts/patch_loclists_startx_length.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
-add_patched_elf_fixture(dwarf5_loclists_start_length.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" fixtures/scripts/patch_loclists_start_length.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(dwarf5_loclists_base_default.elf "${dwarf5_loclists.elf_OUTPUT}" patch_loclists_base_default -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(dwarf5_loclists_base_addressx.elf "${dwarf5_loclists.elf_OUTPUT}" patch_loclists_base_addressx -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(dwarf5_loclists_start_end.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" patch_loclists_start_end -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(dwarf5_loclists_startx_endx.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" patch_loclists_startx_endx -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(dwarf5_loclists_startx_length.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" patch_loclists_startx_length -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_patched_elf_fixture(dwarf5_loclists_start_length.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" patch_loclists_start_length -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_linux_elf_fixture(specification_static.elf fixtures/cpp/specification_static.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-O0")
 add_linux_elf_fixture(thread_local_tls.elf fixtures/cpp/thread_local_tls.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-O0")
 add_gcc_dwarf5_objcopy_fixture_from_sources(
@@ -441,7 +440,7 @@ add_executable(
 
 add_executable(
   debug_sup_form_builder
-  fixtures/scripts/debug_sup_form_builder.cpp
+  fixtures/helpers/debug_sup_form_builder.cpp
 )
 
 target_include_directories(
