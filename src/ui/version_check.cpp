@@ -248,7 +248,7 @@ ParsedUri parse_http_uri(const std::string& uri_text) {
   return parsed;
 }
 
-std::string http_get_text(const std::string& uri_text) {
+std::string http_get_text_impl(const std::string& uri_text) {
   const ParsedUri uri = parse_http_uri(uri_text);
   const HINTERNET session = WinHttpOpen(L"ElfStaticView/1.0",
                                         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -308,13 +308,17 @@ std::string http_get_text(const std::string& uri_text) {
 
 #else
 
-std::string http_get_text(const std::string&) {
+std::string http_get_text_impl(const std::string&) {
   throw std::runtime_error("当前平台暂未实现版本检查 HTTP 客户端");
 }
 
 #endif
 
 }  // namespace
+
+std::string http_get_text(const std::string& uri_text) {
+  return http_get_text_impl(uri_text);
+}
 
 const ReleaseMetadata& default_release_metadata() {
   static const ReleaseMetadata metadata {
@@ -576,16 +580,6 @@ void save_app_config(const AppState& state) {
   }
 
   write_config_root(state.config_path, root);
-}
-
-void check_for_new_version(AppState& state) {
-  VersionCheckState effective_state = resolve_version_check_state(state);
-  const std::string response_text = http_get_text(effective_state.check_uri);
-  state.version_check = parse_version_response_text(response_text,
-                                                    effective_state.check_uri,
-                                                    effective_state.repository_url);
-  state.version_check->check_uri_uses_default = effective_state.check_uri_uses_default;
-  log_info(state, state.version_check->message);
 }
 
 }  // namespace elf_static_view::ui

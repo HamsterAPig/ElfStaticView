@@ -23,6 +23,8 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <functional>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -33,6 +35,11 @@ namespace elf_static_view::ui {
 
 namespace {
 
+constexpr char kTaskSnapshotImport[] = "snapshot_import";
+constexpr char kTaskSnapshotExport[] = "snapshot_export";
+constexpr char kTaskJsonPreview[] = "json_preview";
+constexpr char kTaskVersionCheck[] = "version_check";
+
 std::string read_all_text(const std::string& path) {
   std::ifstream input(platform::utf8_path(path), std::ios::binary);
   if (!input.is_open()) {
@@ -41,6 +48,17 @@ std::string read_all_text(const std::string& path) {
   std::ostringstream stream;
   stream << input.rdbuf();
   return stream.str();
+}
+
+void write_all_text(const std::string& path, const std::string& content) {
+  std::ofstream output(platform::utf8_path(path), std::ios::binary | std::ios::trunc);
+  if (!output.is_open()) {
+    throw std::runtime_error("无法写入文件: " + path);
+  }
+  output.write(content.data(), static_cast<std::streamsize>(content.size()));
+  if (!output.good()) {
+    throw std::runtime_error("写入文件失败: " + path);
+  }
 }
 
 constexpr float kBaseFontSize = 18.0F;
@@ -145,7 +163,7 @@ int Application::run() {
   load_startup_content();
   auto next_frame_deadline = std::chrono::steady_clock::now();
   while (window_ != nullptr && glfwWindowShouldClose(window_) == 0) {
-    poll_background_load();
+    poll_background_tasks();
     if (!needs_redraw_ && !ui_scale_dirty_) {
       // 空闲时阻塞等待事件；一旦收到事件，立刻补一帧把交互结果真正绘制出来。
       glfwWaitEvents();
@@ -266,10 +284,7 @@ void Application::load_startup_content() {
 
   try {
     if (options_.startup_file_is_snapshot) {
-      set_loaded_snapshot(state_,
-                          parse_snapshot_json(read_all_text(options_.startup_file.value())),
-                          options_.startup_file.value());
-      log_info(state_, "已加载启动快照: " + options_.startup_file.value());
+      start_snapshot_import(options_.startup_file.value());
       return;
     }
 
@@ -287,9 +302,7 @@ void Application::load_startup_content() {
 
 void Application::load_file_into_state(const std::string& path) {
   if (std::string_view(path).ends_with(".json")) {
-    const auto snapshot = parse_snapshot_json(read_all_text(path));
-    set_loaded_snapshot(state_, snapshot, path);
-    log_info(state_, "已导入 JSON 快照: " + path);
+    start_snapshot_import(path);
     return;
   }
 
@@ -331,27 +344,215 @@ void Application::start_elf_load(const std::string& path) {
   request_redraw();
 }
 
-void Application::poll_background_load() {
-  if (state_.background_load.status != BackgroundLoadStatus::Loading) {
+void Application::start_snapshot_import(const std::string& path) {
+  const std::uint64_t task_id = task_runner_.submit(
+    kTaskSnapshotImport,
+    path,
+    [path]() -> std::pair<bool, std::string> {
+      try {
+        return {true, read_all_text(path)};
+      } catch (const std::exception& error) {
+        return {false, error.what()};
+      }
+    });
+  begin_ui_task(state_.import_snapshot_task, task_id, path);
+  request_redraw();
+}
+
+void Application::start_snapshot_export(const std::string& path) {
+  const auto snapshot = build_snapshot(state_);
+  if (!snapshot.has_value()) {
+    log_error(state_, "当前没有可导出的模型");
     return;
   }
-  if (!state_.background_load.future.valid()) {
+  auto value = snapshot.value();
+  if (value.exported_at.empty()) {
+    value.exported_at = "generated-by-ui";
+  }
+  const bool include_sensitive_info = state_.export_sensitive_info;
+  const std::uint64_t task_id = task_runner_.submit(
+    kTaskSnapshotExport,
+    path,
+    [path, value = std::move(value), include_sensitive_info]() -> std::pair<bool, std::string> {
+      try {
+        write_all_text(path, render_snapshot_json(value, {.include_sensitive_info = include_sensitive_info}));
+        return {true, path};
+      } catch (const std::exception& error) {
+        return {false, error.what()};
+      }
+    });
+  begin_ui_task(state_.export_snapshot_task, task_id, path);
+  request_redraw();
+}
+
+std::string Application::compute_json_preview_cache_key() const {
+  std::string key;
+  key.reserve(state_.selected_node_path.size() + state_.current_file_path.size() +
+              state_.current_snapshot_path.size() + 64);
+  key.append("node=").append(state_.selected_node_path).append("|");
+  key.append("file=").append(state_.current_file_path).append("|");
+  key.append("snapshot=").append(state_.current_snapshot_path).append("|");
+  key.append("sensitive=").append(state_.export_sensitive_info ? "1" : "0").append("|");
+  key.append("kind=").append(std::to_string(static_cast<int>(state_.loaded_kind)));
+  return key;
+}
+
+void Application::start_json_preview_build() {
+  if (!state_.show_json_preview_panel) {
+    state_.json_preview_dirty = false;
     return;
   }
-  if (state_.background_load.future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+  const std::string cache_key = compute_json_preview_cache_key();
+  if (!state_.json_preview_dirty && cache_key == state_.json_preview_cache_key) {
+    return;
+  }
+  if (state_.json_preview_task.status == UiTaskStatus::Running) {
     return;
   }
 
-  const std::uint64_t task_id = state_.background_load.task_id;
-  const std::string path = state_.background_load.path;
-  try {
-    auto model = state_.background_load.future.get();
-    finish_background_load(state_, task_id, std::move(model));
-    log_info(state_, "已分析文件: " + path);
-  } catch (const std::exception& error) {
-    fail_background_load(state_, task_id, error.what());
+  std::optional<std::string> selected_json = selected_node_json(state_);
+  std::optional<ProjectSnapshot> snapshot;
+  if (!selected_json.has_value()) {
+    snapshot = build_snapshot(state_);
   }
+  const bool include_sensitive_info = state_.export_sensitive_info;
+  const std::uint64_t task_id = task_runner_.submit(
+    kTaskJsonPreview,
+    "preview",
+    [selected_json = std::move(selected_json),
+     snapshot = std::move(snapshot),
+     include_sensitive_info]() -> std::pair<bool, std::string> {
+      try {
+        if (selected_json.has_value()) {
+          return std::pair<bool, std::string> {true, selected_json.value()};
+        }
+        if (snapshot.has_value()) {
+          return std::pair<bool, std::string> {
+            true, render_snapshot_json(snapshot.value(), {.include_sensitive_info = include_sensitive_info})};
+        }
+        return std::pair<bool, std::string> {true, std::string {}};
+      } catch (const std::exception& error) {
+        return std::pair<bool, std::string> {false, error.what()};
+      }
+    });
+  begin_ui_task(state_.json_preview_task, task_id, "JSON 预览");
+  state_.json_preview_cache_key = cache_key;
+  state_.json_preview_dirty = false;
   request_redraw();
+}
+
+void Application::start_version_check() {
+  if (state_.version_check_task.status == UiTaskStatus::Running) {
+    return;
+  }
+  const VersionCheckState effective_state = resolve_version_check_state(state_);
+  const std::uint64_t task_id = task_runner_.submit(
+    kTaskVersionCheck,
+    effective_state.check_uri,
+    [effective_state]() -> std::pair<bool, std::string> {
+      try {
+        const std::string response_text = http_get_text(effective_state.check_uri);
+        return {true, response_text};
+      } catch (const std::exception& error) {
+        return {false, error.what()};
+      }
+    });
+  begin_ui_task(state_.version_check_task, task_id, effective_state.check_uri);
+  request_redraw();
+}
+
+void Application::poll_background_tasks() {
+  if (state_.background_load.status != BackgroundLoadStatus::Loading) {
+  } else if (state_.background_load.future.valid() &&
+             state_.background_load.future.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
+    const std::uint64_t task_id = state_.background_load.task_id;
+    const std::string path = state_.background_load.path;
+    try {
+      auto model = state_.background_load.future.get();
+      finish_background_load(state_, task_id, std::move(model));
+      log_info(state_, "已分析文件: " + path);
+      state_.json_preview_dirty = true;
+    } catch (const std::exception& error) {
+      fail_background_load(state_, task_id, error.what());
+    }
+    request_redraw();
+  }
+
+  if (state_.pending_import_snapshot_path.has_value()) {
+    start_snapshot_import(*state_.pending_import_snapshot_path);
+    state_.pending_import_snapshot_path.reset();
+  }
+  if (state_.pending_export_snapshot_path.has_value()) {
+    start_snapshot_export(*state_.pending_export_snapshot_path);
+    state_.pending_export_snapshot_path.reset();
+  }
+  if (state_.pending_version_check) {
+    start_version_check();
+    state_.pending_version_check = false;
+  }
+
+  start_json_preview_build();
+
+  if (const auto imported = task_runner_.poll(kTaskSnapshotImport); imported.has_value()) {
+    if (imported->success) {
+      try {
+        const auto snapshot = parse_snapshot_json(imported->success_value);
+        const std::string snapshot_path = state_.import_snapshot_task.detail;
+        set_loaded_snapshot(state_, std::move(snapshot), snapshot_path);
+        finish_ui_task(state_.import_snapshot_task, imported->id, "已导入 JSON 快照");
+        log_info(state_, "已导入 JSON 快照: " + snapshot_path);
+        state_.json_preview_dirty = true;
+      } catch (const std::exception& error) {
+        fail_ui_task(state_.import_snapshot_task, imported->id, error.what());
+        log_error(state_, error.what());
+      }
+    } else if (fail_ui_task(state_.import_snapshot_task, imported->id, imported->error_message)) {
+      log_error(state_, imported->error_message);
+    }
+    request_redraw();
+  }
+
+  if (const auto exported = task_runner_.poll(kTaskSnapshotExport); exported.has_value()) {
+    if (exported->success) {
+      if (finish_ui_task(state_.export_snapshot_task, exported->id, "已导出 JSON 快照")) {
+        log_info(state_, "已导出 JSON 快照: " + exported->success_value);
+      }
+    } else if (fail_ui_task(state_.export_snapshot_task, exported->id, exported->error_message)) {
+      log_error(state_, exported->error_message);
+    }
+    request_redraw();
+  }
+
+  if (const auto preview = task_runner_.poll(kTaskJsonPreview); preview.has_value()) {
+    if (preview->success) {
+      if (finish_ui_task(state_.json_preview_task, preview->id, "已刷新 JSON 预览")) {
+        state_.json_preview_text = preview->success_value;
+        state_.json_preview_error.clear();
+      }
+    } else if (fail_ui_task(state_.json_preview_task, preview->id, preview->error_message)) {
+      state_.json_preview_error = preview->error_message;
+    }
+    request_redraw();
+  }
+
+  if (const auto version = task_runner_.poll(kTaskVersionCheck); version.has_value()) {
+    if (version->success) {
+      try {
+        const VersionCheckState effective_state = resolve_version_check_state(state_);
+        state_.version_check =
+          parse_version_response_text(version->success_value, effective_state.check_uri, effective_state.repository_url);
+        state_.version_check->check_uri_uses_default = effective_state.check_uri_uses_default;
+        finish_ui_task(state_.version_check_task, version->id, state_.version_check->message);
+        log_info(state_, state_.version_check->message);
+      } catch (const std::exception& error) {
+        fail_ui_task(state_.version_check_task, version->id, error.what());
+        log_error(state_, error.what());
+      }
+    } else if (fail_ui_task(state_.version_check_task, version->id, version->error_message)) {
+      log_error(state_, version->error_message);
+    }
+    request_redraw();
+  }
 }
 
 void Application::refresh_window_title() {
@@ -411,7 +612,9 @@ void Application::render_frame() {
   ImGui::NewFrame();
 
   MainWindow window;
-  window.render(state_);
+  if (window.render(state_)) {
+    needs_redraw_ = true;
+  }
   if (state_.pending_open_elf_path.has_value()) {
     const std::string path = *state_.pending_open_elf_path;
     state_.pending_open_elf_path.reset();

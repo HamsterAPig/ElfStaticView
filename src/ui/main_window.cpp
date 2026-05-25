@@ -3,7 +3,6 @@
 #include "analysis/address_bias.hpp"
 #include "analysis/expander.hpp"
 #include "elf_static_view/project.hpp"
-#include "platform/utf8.hpp"
 #include "ui/file_dialogs.hpp"
 #include "ui/filter_matcher.hpp"
 #include "ui/version_check.hpp"
@@ -12,10 +11,8 @@
 #include <imgui_internal.h>
 #include <misc/cpp/imgui_stdlib.h>
 
-#include <fstream>
 #include <cstdint>
 #include <limits>
-#include <sstream>
 #include <stdexcept>
 
 namespace elf_static_view::ui {
@@ -236,24 +233,6 @@ void handle_global_shortcuts(AppState& state) {
   }
 }
 
-std::string read_all_text(const std::string& path) {
-  std::ifstream input(platform::utf8_path(path), std::ios::binary);
-  if (!input.is_open()) {
-    throw std::runtime_error("无法打开文件: " + path);
-  }
-  std::ostringstream stream;
-  stream << input.rdbuf();
-  return stream.str();
-}
-
-void write_all_text(const std::string& path, const std::string& content) {
-  std::ofstream output(platform::utf8_path(path), std::ios::binary | std::ios::trunc);
-  if (!output.is_open()) {
-    throw std::runtime_error("无法写入文件: " + path);
-  }
-  output << content;
-}
-
 void render_tree_node(AppState& state, const ExpandedNode& node) {
   if (!node_or_descendant_matches(state, node)) {
     return;
@@ -331,13 +310,12 @@ void import_snapshot_from_dialog(AppState& state) {
   if (!file_path.has_value()) {
     return;
   }
-  set_loaded_snapshot(state, parse_snapshot_json(read_all_text(file_path.value())), file_path.value());
-  log_info(state, "已导入 JSON 快照: " + file_path.value());
+  state.pending_import_snapshot_path = file_path.value();
+  log_info(state, "已选择 JSON 快照，准备后台导入: " + file_path.value());
 }
 
 void export_snapshot_from_dialog(AppState& state) {
-  const auto snapshot = build_snapshot(state);
-  if (!snapshot.has_value()) {
+  if (!state.project_model.has_value()) {
     log_error(state, "当前没有可导出的模型");
     return;
   }
@@ -345,13 +323,8 @@ void export_snapshot_from_dialog(AppState& state) {
   if (!file_path.has_value()) {
     return;
   }
-  auto value = snapshot.value();
-  if (value.exported_at.empty()) {
-    value.exported_at = "generated-by-ui";
-  }
-  write_all_text(file_path.value(),
-                 render_snapshot_json(value, {.include_sensitive_info = state.export_sensitive_info}));
-  log_info(state, "已导出 JSON 快照: " + file_path.value());
+  state.pending_export_snapshot_path = file_path.value();
+  log_info(state, "已选择导出路径，准备后台导出: " + file_path.value());
 }
 
 void render_menu_bar(AppState& state) {
@@ -374,12 +347,21 @@ void render_menu_bar(AppState& state) {
     if (loading) {
       ImGui::EndDisabled();
     }
+    if (state.import_snapshot_task.status == UiTaskStatus::Running) {
+      ImGui::BeginDisabled();
+    }
     if (ImGui::MenuItem("导入 JSON...")) {
       try {
         import_snapshot_from_dialog(state);
       } catch (const std::exception& error) {
         log_error(state, error.what());
       }
+    }
+    if (state.import_snapshot_task.status == UiTaskStatus::Running) {
+      ImGui::EndDisabled();
+    }
+    if (state.export_snapshot_task.status == UiTaskStatus::Running) {
+      ImGui::BeginDisabled();
     }
     if (ImGui::MenuItem("导出 JSON...")) {
       try {
@@ -388,8 +370,13 @@ void render_menu_bar(AppState& state) {
         log_error(state, error.what());
       }
     }
+    if (state.export_snapshot_task.status == UiTaskStatus::Running) {
+      ImGui::EndDisabled();
+    }
     ImGui::Separator();
-    ImGui::Checkbox("导出敏感信息", &state.export_sensitive_info);
+    if (ImGui::Checkbox("导出敏感信息", &state.export_sensitive_info)) {
+      state.json_preview_dirty = true;
+    }
     if (ImGui::MenuItem("退出")) {
       state.request_exit = true;
     }
@@ -403,15 +390,27 @@ void render_menu_bar(AppState& state) {
   }
 
   if (ImGui::BeginMenu("工具")) {
+    if (state.version_check_task.status == UiTaskStatus::Running) {
+      ImGui::BeginDisabled();
+    }
     if (ImGui::MenuItem("检查更新")) {
       try {
-        check_for_new_version(state);
+        state.pending_version_check = true;
       } catch (const std::exception& error) {
         log_error(state, error.what());
       }
     }
+    if (state.version_check_task.status == UiTaskStatus::Running) {
+      ImGui::EndDisabled();
+    }
     if (state.version_check.has_value() && !state.version_check->message.empty()) {
       ImGui::TextDisabled("%s", state.version_check->message.c_str());
+    }
+    if (state.version_check_task.status == UiTaskStatus::Running) {
+      ImGui::TextDisabled("更新检查进行中: %s", state.version_check_task.detail.c_str());
+    } else if (state.version_check_task.status == UiTaskStatus::Failed &&
+               !state.version_check_task.message.empty()) {
+      ImGui::TextDisabled("更新检查失败: %s", state.version_check_task.message.c_str());
     }
     ImGui::EndMenu();
   }
@@ -528,6 +527,22 @@ void render_variables_panel(AppState& state) {
     ImGui::TextWrapped("最近一次加载失败: %s", state.background_load.error_message.c_str());
     ImGui::Separator();
   }
+  if (state.import_snapshot_task.status == UiTaskStatus::Running) {
+    ImGui::Text("正在后台导入: %s", state.import_snapshot_task.detail.c_str());
+    ImGui::Separator();
+  } else if (state.import_snapshot_task.status == UiTaskStatus::Failed &&
+             !state.import_snapshot_task.message.empty()) {
+    ImGui::TextWrapped("最近一次导入失败: %s", state.import_snapshot_task.message.c_str());
+    ImGui::Separator();
+  }
+  if (state.export_snapshot_task.status == UiTaskStatus::Running) {
+    ImGui::Text("正在后台导出: %s", state.export_snapshot_task.detail.c_str());
+    ImGui::Separator();
+  } else if (state.export_snapshot_task.status == UiTaskStatus::Failed &&
+             !state.export_snapshot_task.message.empty()) {
+    ImGui::TextWrapped("最近一次导出失败: %s", state.export_snapshot_task.message.c_str());
+    ImGui::Separator();
+  }
 
   if (!state.project_model.has_value()) {
     ImGui::TextUnformatted("拖拽 ELF 或 JSON 文件到窗口，或者使用“文件”菜单打开。");
@@ -628,24 +643,24 @@ void render_json_preview_panel(AppState& state) {
     ImGui::End();
     return;
   }
-  std::string preview_text;
-  if (const auto json = selected_node_json(state); json.has_value()) {
-    preview_text = json.value();
-  } else if (state.project_model.has_value()) {
-    if (auto snapshot = build_snapshot(state); snapshot.has_value()) {
-      preview_text = render_snapshot_json(snapshot.value(),
-                                          {.include_sensitive_info = state.export_sensitive_info});
-    }
+  if (state.json_preview_task.status == UiTaskStatus::Running) {
+    ImGui::TextUnformatted("正在后台刷新 JSON 预览...");
+    ImGui::End();
+    return;
   }
-
-  if (preview_text.empty()) {
+  if (!state.json_preview_error.empty()) {
+    ImGui::TextWrapped("预览构建失败: %s", state.json_preview_error.c_str());
+    ImGui::End();
+    return;
+  }
+  if (state.json_preview_text.empty()) {
     ImGui::TextUnformatted("暂无可预览内容。");
     ImGui::End();
     return;
   }
 
   ImGui::BeginChild("json_preview_scroll");
-  ImGui::TextUnformatted(preview_text.c_str());
+  ImGui::TextUnformatted(state.json_preview_text.c_str());
   ImGui::EndChild();
   ImGui::End();
 }
@@ -729,12 +744,18 @@ void render_shortcuts_dialog(AppState& state) {
 
 }  // namespace
 
-void MainWindow::render(AppState& state) {
+bool MainWindow::render(AppState& state) {
   constexpr ImGuiDockNodeFlags kDockspaceFlags = ImGuiDockNodeFlags_PassthruCentralNode;
   const ImGuiViewport* main_viewport = ImGui::GetMainViewport();
   const ImGuiID dockspace_id = ImGui::GetID(kMainDockspaceName);
 
   handle_global_shortcuts(state);
+  const std::string previous_selected_path = state.selected_node_path;
+  const bool previous_show_preview = state.show_json_preview_panel;
+  const bool previous_export_sensitive = state.export_sensitive_info;
+  const std::string previous_file_path = state.current_file_path;
+  const std::string previous_snapshot_path = state.current_snapshot_path;
+  const LoadedContentKind previous_loaded_kind = state.loaded_kind;
   render_menu_bar(state);
   ImGui::DockSpaceOverViewport(dockspace_id, main_viewport, kDockspaceFlags);
   setup_default_dock_layout(dockspace_id, main_viewport, kDockspaceFlags);
@@ -744,6 +765,17 @@ void MainWindow::render(AppState& state) {
   render_json_preview_panel(state);
   render_shortcuts_dialog(state);
   render_about_dialog(state);
+
+  const bool preview_related_changed = state.selected_node_path != previous_selected_path ||
+                                       state.show_json_preview_panel != previous_show_preview ||
+                                       state.export_sensitive_info != previous_export_sensitive ||
+                                       state.current_file_path != previous_file_path ||
+                                       state.current_snapshot_path != previous_snapshot_path ||
+                                       state.loaded_kind != previous_loaded_kind;
+  if (preview_related_changed) {
+    state.json_preview_dirty = true;
+  }
+  return preview_related_changed;
 }
 
 }  // namespace elf_static_view::ui

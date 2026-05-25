@@ -298,6 +298,8 @@ void set_loaded_project(AppState& state,
   state.background_load.status = BackgroundLoadStatus::Loaded;
   state.background_load.error_message.clear();
   state.background_load.path = source_path;
+  state.json_preview_dirty = true;
+  state.json_preview_error.clear();
   clear_selection(state);
 }
 
@@ -309,6 +311,8 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
   state.snapshot = std::move(snapshot);
   state.error_message.clear();
   state.window_title_dirty = true;
+  state.json_preview_dirty = true;
+  state.json_preview_error.clear();
   clear_selection(state);
 }
 
@@ -337,6 +341,32 @@ void fail_background_load(AppState& state, const std::uint64_t task_id, const st
   state.background_load.error_message = message;
   state.background_load.future = {};
   log_error(state, message);
+}
+
+void begin_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::string& detail) {
+  task.status = UiTaskStatus::Running;
+  task.task_id = task_id;
+  task.detail = detail;
+  task.message.clear();
+  task.started_at = std::chrono::steady_clock::now();
+}
+
+bool finish_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::string& message) {
+  if (task.task_id != task_id) {
+    return false;
+  }
+  task.status = UiTaskStatus::Succeeded;
+  task.message = message;
+  return true;
+}
+
+bool fail_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::string& message) {
+  if (task.task_id != task_id) {
+    return false;
+  }
+  task.status = UiTaskStatus::Failed;
+  task.message = message;
+  return true;
 }
 
 std::optional<ProjectSnapshot> build_snapshot(const AppState& state) {

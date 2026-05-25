@@ -106,6 +106,7 @@ target_compile_features(elf_static_view_core PUBLIC cxx_std_20)
 add_library(elf_static_view_ui_support STATIC
   src/ui/app_state.cpp
   src/ui/filter_matcher.cpp
+  src/ui/ui_task_runner.cpp
 )
 
 target_include_directories(
