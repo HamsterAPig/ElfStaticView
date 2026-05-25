@@ -6,3 +6,6 @@ cmake-build-*
 .idea/
 tmp/
 __pycache__/
+.vs
+out
+/CMakeSettings.json
