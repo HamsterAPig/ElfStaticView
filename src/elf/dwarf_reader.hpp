@@ -8,7 +8,8 @@ namespace elf_static_view::elf {
 
 class DwarfReader {
 public:
-  [[nodiscard]] ProjectModel load(const std::string& file_path) const;
+  [[nodiscard]] ProjectModel load(const std::string& file_path,
+                                  const LoadPolicy& load_policy = {}) const;
 };
 
 }  // namespace elf_static_view::elf

@@ -4,6 +4,7 @@
 #include "elf_static_view/project.hpp"
 #include "logging/logger.hpp"
 #include "ui/application.hpp"
+#include "ui/version_check.hpp"
 
 #include <exception>
 #include <filesystem>
@@ -22,11 +23,26 @@ struct CliOptions {
   std::string file;
   std::string format = "text";
   bool show_runtime_only = false;
+  bool show_runtime_only_specified = false;
   bool only_static_known = false;
+  bool only_static_known_specified = false;
   std::optional<std::string> symbol_name;
   std::size_t expand_depth = 8;
+  bool expand_depth_specified = false;
   std::optional<std::int64_t> address_bias;
 };
+
+std::filesystem::path resolve_executable_path(char** argv) {
+  std::filesystem::path executable_path = argv[0];
+#if defined(_WIN32)
+  wchar_t module_path[MAX_PATH] = {};
+  const DWORD module_path_length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
+  if (module_path_length > 0 && module_path_length < MAX_PATH) {
+    executable_path = std::filesystem::path(module_path);
+  }
+#endif
+  return executable_path;
+}
 
 void print_usage() {
   std::cout
@@ -53,12 +69,15 @@ CliOptions parse_cli_arguments(const int argc, char** argv) {
       options.format = argv[++index];
     } else if (arg == "--show-runtime-only") {
       options.show_runtime_only = true;
+      options.show_runtime_only_specified = true;
     } else if (arg == "--only-static-known") {
       options.only_static_known = true;
+      options.only_static_known_specified = true;
     } else if (arg == "--symbol" && index + 1 < argc) {
       options.symbol_name = argv[++index];
     } else if (arg == "--expand-depth" && index + 1 < argc) {
       options.expand_depth = static_cast<std::size_t>(std::stoul(argv[++index]));
+      options.expand_depth_specified = true;
     } else if (arg == "--address-bias" && index + 1 < argc) {
       options.address_bias = elf_static_view::parse_address_bias(argv[++index]);
     } else {
@@ -77,20 +96,46 @@ CliOptions parse_cli_arguments(const int argc, char** argv) {
 
 int run_cli(const int argc, char** argv) {
   const CliOptions options = parse_cli_arguments(argc, argv);
+  const std::filesystem::path executable_path = resolve_executable_path(argv);
   elf_static_view::ProjectLoader loader;
+  elf_static_view::LoadPolicy load_policy = elf_static_view::ui::load_cli_load_policy(executable_path);
+
+  // CLI 显式参数优先；未显式传入时沿用配置文件默认值。
+  if (options.expand_depth_specified) {
+    load_policy.expand_depth = options.expand_depth;
+  }
+  if (options.show_runtime_only_specified) {
+    load_policy.exclude_runtime_only_variables = !options.show_runtime_only;
+  }
+  if (options.only_static_known_specified) {
+    load_policy.static_storage_only = options.only_static_known;
+  }
+
+  const bool include_runtime_only =
+    options.show_runtime_only_specified ? options.show_runtime_only
+                                        : !load_policy.exclude_runtime_only_variables;
+  const bool only_static_known =
+    options.only_static_known_specified ? options.only_static_known
+                                        : load_policy.static_storage_only;
+  const std::size_t expand_depth =
+    options.expand_depth_specified ? options.expand_depth
+                                   : load_policy.expand_depth;
 
   if (options.command == "scan") {
-    const auto model = loader.scan(options.file, {.include_runtime_only = options.show_runtime_only});
+    const auto model = loader.scan(options.file,
+                                   {.include_runtime_only = include_runtime_only,
+                                    .load_policy = load_policy});
     std::cout << elf_static_view::render_scan_text(model);
     return 0;
   }
 
   if (options.command == "dump") {
     const auto model = loader.dump(options.file,
-                                   {.include_runtime_only = options.show_runtime_only,
-                                    .only_static_known = options.only_static_known,
+                                   {.include_runtime_only = include_runtime_only,
+                                    .only_static_known = only_static_known,
                                     .symbol_name = options.symbol_name,
-                                    .expand_depth = options.expand_depth});
+                                    .expand_depth = expand_depth,
+                                    .load_policy = load_policy});
     if (options.format == "json") {
       std::cout << elf_static_view::render_dump_json(model);
     } else if (options.address_bias.has_value()) {
@@ -112,14 +157,7 @@ int run_ui(const int argc, char** argv) {
     input_path_is_snapshot = input_path->ends_with(".json");
   }
 
-  std::filesystem::path executable_path = argv[0];
-#if defined(_WIN32)
-  wchar_t module_path[MAX_PATH] = {};
-  const DWORD module_path_length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
-  if (module_path_length > 0 && module_path_length < MAX_PATH) {
-    executable_path = std::filesystem::path(module_path);
-  }
-#endif
+  const std::filesystem::path executable_path = resolve_executable_path(argv);
 
   elf_static_view::ui::Application app(
     {.startup_file = input_path,

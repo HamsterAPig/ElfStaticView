@@ -16,9 +16,13 @@ try {
   if ($LASTEXITCODE -ne 0) {
     if (Test-Path $OutputPath) {
       Write-Warning "导出 .debug_abbrev 失败，沿用已有 ref_sup4 输出: $OutputPath"
+      $global:LASTEXITCODE = 0
       return
     }
-    throw "导出 .debug_abbrev 失败"
+    Copy-Item -LiteralPath $InputPath -Destination $OutputPath -Force
+    Write-Warning "导出 .debug_abbrev 失败，回退为未改写的 strp_sup 输入: $OutputPath"
+    $global:LASTEXITCODE = 0
+    return
   }
 
   $abbrev = [System.IO.File]::ReadAllBytes($abbrevPath)

@@ -145,6 +145,7 @@ int Application::run() {
   load_startup_content();
   auto next_frame_deadline = std::chrono::steady_clock::now();
   while (window_ != nullptr && glfwWindowShouldClose(window_) == 0) {
+    poll_background_load();
     if (!needs_redraw_ && !ui_scale_dirty_) {
       // 空闲时阻塞等待事件；一旦收到事件，立刻补一帧把交互结果真正绘制出来。
       glfwWaitEvents();
@@ -292,16 +293,65 @@ void Application::load_file_into_state(const std::string& path) {
     return;
   }
 
-  ProjectLoader loader;
-  set_loaded_project(state_,
-                     loader.dump(path,
-                                 {.include_runtime_only = true,
-                                  .only_static_known = false,
-                                  .symbol_name = std::nullopt,
-                                  .expand_depth = 8}),
-                     LoadedContentKind::ElfProject,
-                     path);
-  log_info(state_, "已分析文件: " + path);
+  start_elf_load(path);
+}
+
+DumpOptions Application::build_dump_options() const {
+  DumpOptions options;
+  options.include_runtime_only = !state_.load_policy.exclude_runtime_only_variables;
+  options.only_static_known = state_.load_policy.static_storage_only;
+  options.symbol_name = std::nullopt;
+  options.expand_depth = state_.load_policy.expand_depth;
+  options.load_policy = state_.load_policy;
+  return options;
+}
+
+void Application::start_elf_load(const std::string& path) {
+  const std::uint64_t task_id = next_load_task_id_++;
+  begin_background_load(state_, task_id, path);
+  log_info(state_, "开始分析 ELF: " + path);
+
+  if (!state_.enable_background_loading) {
+    try {
+      ProjectLoader loader;
+      finish_background_load(state_, task_id, loader.dump(path, build_dump_options()));
+      log_info(state_, "已分析文件: " + path);
+    } catch (const std::exception& error) {
+      fail_background_load(state_, task_id, error.what());
+    }
+    request_redraw();
+    return;
+  }
+
+  const DumpOptions options = build_dump_options();
+  state_.background_load.future = std::async(std::launch::async, [path, options]() {
+    ProjectLoader loader;
+    return loader.dump(path, options);
+  });
+  request_redraw();
+}
+
+void Application::poll_background_load() {
+  if (state_.background_load.status != BackgroundLoadStatus::Loading) {
+    return;
+  }
+  if (!state_.background_load.future.valid()) {
+    return;
+  }
+  if (state_.background_load.future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+    return;
+  }
+
+  const std::uint64_t task_id = state_.background_load.task_id;
+  const std::string path = state_.background_load.path;
+  try {
+    auto model = state_.background_load.future.get();
+    finish_background_load(state_, task_id, std::move(model));
+    log_info(state_, "已分析文件: " + path);
+  } catch (const std::exception& error) {
+    fail_background_load(state_, task_id, error.what());
+  }
+  request_redraw();
 }
 
 void Application::refresh_window_title() {
@@ -362,6 +412,15 @@ void Application::render_frame() {
 
   MainWindow window;
   window.render(state_);
+  if (state_.pending_open_elf_path.has_value()) {
+    const std::string path = *state_.pending_open_elf_path;
+    state_.pending_open_elf_path.reset();
+    try {
+      start_elf_load(path);
+    } catch (const std::exception& error) {
+      log_error(state_, error.what());
+    }
+  }
   if (state_.window_title_dirty) {
     refresh_window_title();
     needs_redraw_ = true;

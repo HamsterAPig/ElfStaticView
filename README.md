@@ -126,6 +126,40 @@ address_bias:
 - `copy.strip_hex_prefix`：十六进制复制时是否去掉 `0x`
 - `ui.refresh_rate`：界面刷新频率
 - `address_bias.write_back`：是否将地址偏移写回配置
+- `load_policy.enable_background_loading`：GUI 打开 ELF 时是否后台加载，默认开启
+- `load_policy.default_static_storage_only`：是否默认只保留静态存储变量，默认开启
+- `load_policy.exclude_formal_parameters`：是否默认跳过函数形参，默认开启
+- `load_policy.exclude_runtime_only_variables`：是否默认跳过运行时变量，默认开启
+- `load_policy.compile_unit_path_rules`：按编译单元源码路径过滤的 gitignore 风格规则
+- `load_policy.max_expand_depth`：默认展开深度，默认 `6`
+- `load_policy.lazy_expand_children`：是否启用子节点按需展开，默认开启；当前已用于推迟深层聚合类型与数组子节点的构建
+- `load_policy.enable_parse_metrics`：是否展示解析指标，当前会在 Inspector 面板展示粗粒度耗时与过滤计数
+
+示例：
+
+```yaml
+load_policy:
+  enable_background_loading: true
+  default_static_storage_only: true
+  exclude_formal_parameters: true
+  exclude_runtime_only_variables: true
+  compile_unit_path_rules: |
+    **/CMSIS/**
+    **/HAL/**
+    **/Drivers/**
+    **/Middlewares/**
+    !**/Core/**
+    !**/App/**
+  max_expand_depth: 6
+  lazy_expand_children: true
+  enable_parse_metrics: true
+```
+
+说明：
+
+- `compile_unit_path_rules` 采用 gitignore 风格，支持 `*`、`**`、`?` 和 `!`
+- 命中排除规则的编译单元会在 DWARF 遍历前直接跳过
+- 默认策略面向嵌入式静态地址分析场景，优先缩短大 ELF 的加载时间
 
 ## 发布
 

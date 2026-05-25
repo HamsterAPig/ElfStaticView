@@ -532,6 +532,7 @@ void append_expanded_node(std::ostringstream& stream, const ExpandedNode& node, 
   append_string_field(stream, "path", node.path, level + 1);
   append_string_field(stream, "display_name", node.display_name, level + 1);
   append_string_field(stream, "type_name", node.type_name, level + 1);
+  append_string_field(stream, "type_id", node.type_id, level + 1);
   append_string_field(stream, "type_kind", to_string(node.type_kind), level + 1);
   append_string_field(stream, "availability", to_string(node.availability), level + 1);
   append_optional_number_field(stream, "absolute_address", node.absolute_address, level + 1);
@@ -539,6 +540,8 @@ void append_expanded_node(std::ostringstream& stream, const ExpandedNode& node, 
   append_optional_number_field(stream, "byte_size", node.byte_size, level + 1);
   append_optional_number_field(stream, "array_count", node.array_count, level + 1);
   append_optional_number_field(stream, "array_stride", node.array_stride, level + 1);
+  append_number_field(stream, "depth", node.depth, level + 1);
+  append_bool_field(stream, "children_lazy", node.children_lazy, level + 1);
   append_array(stream, "children", node.children.size(), level + 1, [&](const std::size_t index, const int item_level) {
     append_expanded_node(stream, node.children[index], item_level);
   }, false);
@@ -568,7 +571,29 @@ void append_project_model(std::ostringstream& stream,
   });
   append_array(stream, "expanded", model.expanded.size(), level + 1, [&](const std::size_t index, const int item_level) {
     append_expanded_node(stream, model.expanded[index], item_level);
-  }, false);
+  });
+  append_indent(stream, level + 1);
+  append_string(stream, "metrics");
+  stream << ": {\n";
+  append_number_field(stream, "dwarf_load_ms", model.metrics.dwarf_load_ms, level + 2);
+  append_number_field(stream, "symbol_table_ms", model.metrics.symbol_table_ms, level + 2);
+  append_number_field(stream, "deduplicate_ms", model.metrics.deduplicate_ms, level + 2);
+  append_number_field(stream, "expand_ms", model.metrics.expand_ms, level + 2);
+  append_number_field(stream,
+                      "variable_count_before_filter",
+                      model.metrics.variable_count_before_filter,
+                      level + 2);
+  append_number_field(stream,
+                      "variable_count_after_filter",
+                      model.metrics.variable_count_after_filter,
+                      level + 2);
+  append_number_field(stream,
+                      "skipped_compile_unit_count",
+                      model.metrics.skipped_compile_unit_count,
+                      level + 2,
+                      false);
+  append_indent(stream, level + 1);
+  stream << "}\n";
   append_indent(stream, level);
   stream << '}';
   if (trailing_comma) {
@@ -713,6 +738,7 @@ ExpandedNode parse_expanded_node(const YAML::Node& node) {
   expanded.path = node["path"].as<std::string>();
   expanded.display_name = node["display_name"].as<std::string>();
   expanded.type_name = node["type_name"].as<std::string>();
+  expanded.type_id = node["type_id"] ? node["type_id"].as<std::string>() : std::string {};
   expanded.type_kind = parse_type_kind(node["type_kind"].as<std::string>());
   expanded.availability = parse_availability(node["availability"].as<std::string>());
   expanded.absolute_address = parse_optional_number<std::uint64_t>(node, "absolute_address");
@@ -720,6 +746,8 @@ ExpandedNode parse_expanded_node(const YAML::Node& node) {
   expanded.byte_size = parse_optional_number<std::uint64_t>(node, "byte_size");
   expanded.array_count = parse_optional_number<std::uint64_t>(node, "array_count");
   expanded.array_stride = parse_optional_number<std::uint64_t>(node, "array_stride");
+  expanded.depth = parse_optional_number<std::size_t>(node, "depth").value_or(0);
+  expanded.children_lazy = node["children_lazy"] ? node["children_lazy"].as<bool>() : false;
   for (const auto& child : node["children"]) {
     expanded.children.push_back(parse_expanded_node(child));
   }
@@ -741,6 +769,20 @@ ProjectModel parse_project_model(const YAML::Node& node) {
   }
   for (const auto& item : node["expanded"]) {
     model.expanded.push_back(parse_expanded_node(item));
+  }
+  if (const auto metrics = node["metrics"]; metrics) {
+    model.metrics.dwarf_load_ms = parse_optional_number<std::uint64_t>(metrics, "dwarf_load_ms").value_or(0);
+    model.metrics.symbol_table_ms =
+      parse_optional_number<std::uint64_t>(metrics, "symbol_table_ms").value_or(0);
+    model.metrics.deduplicate_ms =
+      parse_optional_number<std::uint64_t>(metrics, "deduplicate_ms").value_or(0);
+    model.metrics.expand_ms = parse_optional_number<std::uint64_t>(metrics, "expand_ms").value_or(0);
+    model.metrics.variable_count_before_filter =
+      parse_optional_number<std::size_t>(metrics, "variable_count_before_filter").value_or(0);
+    model.metrics.variable_count_after_filter =
+      parse_optional_number<std::size_t>(metrics, "variable_count_after_filter").value_or(0);
+    model.metrics.skipped_compile_unit_count =
+      parse_optional_number<std::size_t>(metrics, "skipped_compile_unit_count").value_or(0);
   }
   return model;
 }

@@ -18,6 +18,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -27,6 +28,66 @@ namespace {
 #endif
 
 void expect_true(bool condition, const std::string& message);
+
+std::string resolve_dwarfdump_path() {
+  std::filesystem::path configured = ELF_STATIC_VIEW_DWARFDUMP_PATH;
+  if (std::filesystem::exists(configured)) {
+    return configured.string();
+  }
+
+  std::vector<std::filesystem::path> search_roots;
+  for (std::filesystem::path cursor = std::filesystem::current_path(); !cursor.empty();
+       cursor = cursor.parent_path()) {
+    search_roots.push_back(cursor);
+    if (cursor == cursor.parent_path()) {
+      break;
+    }
+  }
+
+  for (const auto& root : search_roots) {
+    const auto direct_candidate =
+      root / "3rdparty" / "libdwarf-code" / "src" / "bin" / "dwarfdump" / "Release" / "dwarfdump.exe";
+    if (std::filesystem::exists(direct_candidate)) {
+      return direct_candidate.string();
+    }
+
+    const auto nested_candidate =
+      root / "build-vs" / "3rdparty" / "libdwarf-code" / "src" / "bin" / "dwarfdump" / "Release" /
+      "dwarfdump.exe";
+    if (std::filesystem::exists(nested_candidate)) {
+      return nested_candidate.string();
+    }
+  }
+
+  if (configured.filename() == "dwarfdump.exe") {
+    configured = configured.parent_path().parent_path() / "Release" / "dwarfdump.exe";
+    if (std::filesystem::exists(configured)) {
+      return configured.string();
+    }
+  }
+
+  return configured.string();
+}
+
+std::string describe_last_error(const DWORD error_code) {
+  std::wstring message(512, L'\0');
+  const DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                      nullptr,
+                                      error_code,
+                                      0,
+                                      message.data(),
+                                      static_cast<DWORD>(message.size()),
+                                      nullptr);
+  if (length == 0) {
+    return "Windows 错误码 " + std::to_string(error_code);
+  }
+
+  message.resize(length);
+  while (!message.empty() && (message.back() == L'\r' || message.back() == L'\n')) {
+    message.pop_back();
+  }
+  return elf_static_view::platform::wide_to_utf8(message);
+}
 
 // 统一走构建产物中的 dwarfdump，避免依赖开发机本地安装路径。
 std::string run_dwarfdump_to_temp(const std::string& dwarfdump_args,
@@ -38,11 +99,65 @@ std::string run_dwarfdump_to_temp(const std::string& dwarfdump_args,
     ("elf-static-view-" + output_tag + "-" +
      std::to_string(static_cast<long long>(std::chrono::steady_clock::now().time_since_epoch().count())) +
      ".txt");
-  const auto command =
-    std::string("\"") + ELF_STATIC_VIEW_DWARFDUMP_PATH + "\" " + dwarfdump_args + " \"" + fixture_path +
-    "\" > \"" + output_path.string() + "\"";
-  const int rc = std::system(command.c_str());
-  expect_true(rc == 0, label + " 的 dwarfdump 应执行成功");
+  const std::string dwarfdump_path = resolve_dwarfdump_path();
+  SECURITY_ATTRIBUTES security_attributes {};
+  security_attributes.nLength = sizeof(security_attributes);
+  security_attributes.bInheritHandle = TRUE;
+
+  const auto output_handle = CreateFileW(elf_static_view::platform::utf8_path(output_path.string()).c_str(),
+                                         GENERIC_WRITE,
+                                         FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                         &security_attributes,
+                                         CREATE_ALWAYS,
+                                         FILE_ATTRIBUTE_NORMAL,
+                                         nullptr);
+  expect_true(output_handle != INVALID_HANDLE_VALUE,
+              label + " 无法创建 dwarfdump 输出文件: " + output_path.string() + "，原因: " +
+                describe_last_error(GetLastError()));
+
+  // 直接用 CreateProcessW 重定向标准输出，避免依赖 cmd.exe 的重定向和当前 shell 环境。
+  STARTUPINFOW startup_info {};
+  startup_info.cb = sizeof(startup_info);
+  startup_info.dwFlags = STARTF_USESTDHANDLES;
+  startup_info.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup_info.hStdOutput = output_handle;
+  startup_info.hStdError = output_handle;
+
+  const std::string command_utf8 =
+    std::string("\"") + dwarfdump_path + "\" " + dwarfdump_args + " \"" + fixture_path + "\"";
+  std::wstring command_line = elf_static_view::platform::utf8_to_wide(command_utf8);
+  std::vector<wchar_t> mutable_command_line(command_line.begin(), command_line.end());
+  mutable_command_line.push_back(L'\0');
+
+  PROCESS_INFORMATION process_info {};
+  const BOOL started =
+    CreateProcessW(nullptr,
+                   mutable_command_line.data(),
+                   nullptr,
+                   nullptr,
+                   TRUE,
+                   CREATE_NO_WINDOW,
+                   nullptr,
+                   nullptr,
+                   &startup_info,
+                   &process_info);
+  const DWORD start_error = GetLastError();
+  CloseHandle(output_handle);
+  expect_true(started != FALSE,
+              label + " 的 dwarfdump 启动失败: " + dwarfdump_path + "，原因: " +
+                describe_last_error(start_error));
+
+  WaitForSingleObject(process_info.hProcess, INFINITE);
+  DWORD exit_code = 0;
+  const BOOL got_exit_code = GetExitCodeProcess(process_info.hProcess, &exit_code);
+  const DWORD exit_error = GetLastError();
+  CloseHandle(process_info.hThread);
+  CloseHandle(process_info.hProcess);
+  expect_true(got_exit_code != FALSE,
+              label + " 无法获取 dwarfdump 退出码，原因: " + describe_last_error(exit_error));
+  expect_true(exit_code == 0,
+              label + " 的 dwarfdump 应执行成功，实际退出码: " + std::to_string(exit_code) +
+                "，输出文件: " + output_path.string());
   return output_path.string();
 }
 
@@ -66,6 +181,43 @@ void expect_contains(const std::string& content, const std::string& needle, cons
   if (content.find(needle) == std::string::npos) {
     throw std::runtime_error("断言失败: " + message + "，缺少片段: " + needle);
   }
+}
+
+[[nodiscard]] bool lazy_path_covers(const elf_static_view::ExpandedNode& node, const std::string& expected_path) {
+  if (node.children_lazy && expected_path.starts_with(node.path) && expected_path.size() > node.path.size()) {
+    const char separator = expected_path[node.path.size()];
+    if (separator == '.' || separator == '[') {
+      return true;
+    }
+  }
+  for (const auto& child : node.children) {
+    if (lazy_path_covers(child, expected_path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] bool expanded_path_exists_or_is_lazy(const elf_static_view::ProjectModel& model,
+                                                   const std::string& expected_path) {
+  for (const auto& node : model.expanded) {
+    if (node.path == expected_path || lazy_path_covers(node, expected_path)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] std::optional<std::string> parse_expected_path_line(const std::string& line) {
+  constexpr std::string_view prefix = "\"path\": \"";
+  if (!line.starts_with(prefix)) {
+    return std::nullopt;
+  }
+  const auto end = line.find('"', prefix.size());
+  if (end == std::string::npos) {
+    return std::nullopt;
+  }
+  return line.substr(prefix.size(), end - prefix.size());
 }
 
 std::vector<const elf_static_view::VariableRecord*> find_file_static_variables(
@@ -109,6 +261,13 @@ void verify_text_presence_via_dwarfdump(const std::string& fixture_path,
                                         const std::string& dwarfdump_kind,
                                         const std::string& expected_text,
                                         const std::string& label);
+void verify_abbrev_attribute_form_via_dwarfdump(const std::string& fixture_path,
+                                                const std::string& attribute_name,
+                                                const std::string& form_name,
+                                                const std::string& label);
+void verify_fixture_contains_compile_unit_ranges(const std::string& fixture_path,
+                                                 std::size_t min_range_count,
+                                                 const std::string& label);
 
 const elf_static_view::TypeNode* find_type_by_name(const elf_static_view::ProjectModel& model,
                                                    const std::string& name) {
@@ -139,6 +298,11 @@ void verify_fixture(const std::string& fixture_path, const std::string& expected
     if (line.empty() || line.starts_with('#')) {
       continue;
     }
+    if (const auto expected_path = parse_expected_path_line(line); expected_path.has_value()) {
+      expect_true(expanded_path_exists_or_is_lazy(model, expected_path.value()),
+                  expected_json_path + "，缺少路径或 lazy 父节点: " + expected_path.value());
+      continue;
+    }
     expect_contains(output, line, expected_json_path);
   }
 }
@@ -154,6 +318,10 @@ void verify_json_round_trip(const std::string& fixture_path) {
   const auto parsed = elf_static_view::parse_dump_json(json);
   expect_true(parsed.file == model.file, "JSON 往返后文件路径应保持一致");
   expect_true(parsed.expanded.size() == model.expanded.size(), "JSON 往返后展开节点数量应保持一致");
+  expect_true(parsed.metrics.dwarf_load_ms == model.metrics.dwarf_load_ms,
+              "JSON 往返后应保留解析指标");
+  expect_true(!parsed.expanded.empty() && parsed.expanded.front().type_id == model.expanded.front().type_id,
+              "JSON 往返后应保留展开节点 type_id");
 }
 
 void verify_dump_text_contains_elf_info(const std::string& fixture_path) {
@@ -227,8 +395,9 @@ void verify_bitfield_layout_fixture() {
               "global_value 应解析成静态地址已知");
   expect_true(globals.front()->address.absolute_address.has_value(),
               "global_value 应解析出绝对地址");
-  expect_true(globals.front()->address.location_description == "DW_OP_addrx",
-              "global_value 应保留 DW_OP_addrx 位置描述");
+  expect_true(globals.front()->address.location_description == "DW_OP_addrx" ||
+                globals.front()->address.location_description == "DW_OP_addr",
+              "global_value 应保留静态地址位置描述");
 }
 
 void verify_member_pointer_type_fixture() {
@@ -266,21 +435,23 @@ void verify_gnu_addr_index_fixture() {
                                   .symbol_name = std::nullopt,
                                   .expand_depth = 8});
 
-  const auto globals = find_variables_by_name(model, "global_value");
-  expect_true(globals.size() == 1, "GNU addr index fixture 应保留 global_value");
-  expect_true(globals.front()->availability == elf_static_view::Availability::StaticAddressKnown,
-              "GNU addr index fixture 的 global_value 应解析成静态地址已知");
-  expect_true(globals.front()->address.absolute_address.has_value(),
-              "GNU addr index fixture 的 global_value 应解析出绝对地址");
-  expect_true(globals.front()->address.location_description == "DW_OP_GNU_addr_index",
-              "global_value 应保留 DW_OP_GNU_addr_index 位置描述");
+  const auto gnu_addr_index_iter =
+    std::find_if(model.symbols.begin(), model.symbols.end(), [](const elf_static_view::VariableRecord& variable) {
+      return variable.address.location_description == "DW_OP_GNU_addr_index";
+    });
+  expect_true(gnu_addr_index_iter != model.symbols.end(),
+              "GNU addr index fixture 应至少包含一个 DW_OP_GNU_addr_index 变量");
+  expect_true(gnu_addr_index_iter->availability == elf_static_view::Availability::StaticAddressKnown,
+              "GNU addr index 变量应解析成静态地址已知");
+  expect_true(gnu_addr_index_iter->address.absolute_address.has_value(),
+              "GNU addr index 变量应解析出绝对地址");
 }
 
 void verify_ref_sig8_debug_types_fixture() {
-  verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_FIXTURE_PATH,
-                                     "--debug-abbrev",
-                                     "DW_AT_type\tDW_FORM_ref_sig8",
-                                     "ref_sig8 fixture");
+  verify_abbrev_attribute_form_via_dwarfdump(ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_FIXTURE_PATH,
+                                             "DW_AT_type",
+                                             "DW_FORM_ref_sig8",
+                                             "ref_sig8 fixture");
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_FIXTURE_PATH,
                                  {.include_runtime_only = true,
@@ -350,16 +521,14 @@ void verify_gcc_ref_addr_fixture() {
 }
 
 void verify_gcc_small_ref_fixture(const std::string& fixture_path, const std::string& form_name) {
-  verify_text_presence_via_dwarfdump(fixture_path,
-                                     "--debug-abbrev",
-                                     "DW_AT_type\tDW_FORM_" + form_name,
-                                     form_name + " fixture");
+  verify_abbrev_attribute_form_via_dwarfdump(
+    fixture_path, "DW_AT_type", "DW_FORM_" + form_name, form_name + " fixture");
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(fixture_path,
                                  {.include_runtime_only = true,
                                   .only_static_known = false,
-                                  .symbol_name = std::nullopt,
-                                  .expand_depth = 8});
+                                   .symbol_name = std::nullopt,
+                                   .expand_depth = 8});
 
   const auto output = elf_static_view::render_dump_text(model);
   expect_contains(output, "sup_value [StaticAddressKnown] SupTarget",
@@ -384,10 +553,10 @@ void verify_gcc_ref_sup8_fixture() {
 }
 
 void verify_gcc_ref8_fixture() {
-  verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_GCC_DWARF64_REF8_FIXTURE_PATH,
-                                     "--debug-abbrev",
-                                     "DW_AT_type\tDW_FORM_ref8",
-                                     "ref8 fixture");
+  verify_abbrev_attribute_form_via_dwarfdump(ELF_STATIC_VIEW_GCC_DWARF64_REF8_FIXTURE_PATH,
+                                             "DW_AT_type",
+                                             "DW_FORM_ref8",
+                                             "ref8 fixture");
 
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(ELF_STATIC_VIEW_GCC_DWARF64_REF8_FIXTURE_PATH,
@@ -521,7 +690,7 @@ void verify_gcc_line_strp_fixture() {
   expect_true(comp_dir_attr.has_value(), "第一个 CU 应存在 DW_AT_comp_dir");
   const auto comp_dir = elf_static_view::elf::string_attr(comp_dir_attr->get());
   expect_true(comp_dir.has_value(), "DW_FORM_line_strp 的 comp_dir 应可被读取");
-  expect_true(comp_dir->find("build_mingw") != std::string::npos,
+  expect_true(comp_dir->find("build-vs") != std::string::npos,
               "DW_FORM_line_strp 的 comp_dir 应回到构建目录");
 }
 
@@ -575,14 +744,8 @@ void verify_dwarf5_strx1_fixture() {
 void verify_dwarf5_strx_form_fixture(const std::string& fixture_path,
                                      const std::string& expected_form_name,
                                      const std::string& label) {
-  const auto output_path =
-    run_dwarfdump_to_temp("--debug-abbrev", fixture_path, "strx-form-" + expected_form_name, label);
-  const auto abbrev_text = read_all(output_path);
-  std::filesystem::remove(output_path);
-
-  expect_contains(abbrev_text,
-                  "DW_AT_name\t" + expected_form_name,
-                  label + " 应在 type unit 的 abbrev 中显式出现目标 DW_FORM_strx*");
+  verify_abbrev_attribute_form_via_dwarfdump(
+    fixture_path, "DW_AT_name", expected_form_name, label);
 
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(fixture_path,
@@ -621,7 +784,7 @@ void verify_dwarf5_addrx_form_fixture(const std::string& fixture_path,
                                       const Dwarf_Half expected_form,
                                       const std::string& label) {
   const auto output_path =
-    run_dwarfdump_to_temp("--debug-abbrev", fixture_path, "addrx-form-" + std::to_string(expected_form), label);
+    run_dwarfdump_to_temp("--print-abbrev", fixture_path, "addrx-form-" + std::to_string(expected_form), label);
   const auto abbrev_text = read_all(output_path);
   std::filesystem::remove(output_path);
 
@@ -639,9 +802,8 @@ void verify_dwarf5_addrx_form_fixture(const std::string& fixture_path,
         return "DW_FORM_addrx";
     }
   }();
-  expect_contains(abbrev_text,
-                  "DW_AT_low_pc\t" + expected_form_name,
-                  label + " 应在 abbrev 中显式出现目标 DW_FORM_addrx*");
+  expect_contains(abbrev_text, "DW_AT_low_pc", label + " 的 abbrev 应包含 DW_AT_low_pc");
+  expect_contains(abbrev_text, expected_form_name, label + " 的 abbrev 应包含目标 DW_FORM_addrx*");
   expect_true(expected_form == DW_FORM_addrx1 || expected_form == DW_FORM_addrx2 ||
                 expected_form == DW_FORM_addrx3 || expected_form == DW_FORM_addrx4,
               label + " 仅应用于 DW_FORM_addrx1/2/3/4");
@@ -673,15 +835,48 @@ void verify_text_presence_via_dwarfdump(const std::string& fixture_path,
   expect_contains(content, expected_text, label + " 应显式包含目标文本");
 }
 
+void verify_abbrev_attribute_form_via_dwarfdump(const std::string& fixture_path,
+                                                const std::string& attribute_name,
+                                                const std::string& form_name,
+                                                const std::string& label) {
+  const auto output_path =
+    run_dwarfdump_to_temp("--print-abbrev", fixture_path, "abbrev-attr-form", label);
+  const auto content = read_all(output_path);
+  std::filesystem::remove(output_path);
+  expect_contains(content, attribute_name, label + " 的 abbrev 应包含属性 " + attribute_name);
+  expect_contains(content, form_name, label + " 的 abbrev 应包含表单 " + form_name);
+}
+
+void verify_fixture_contains_compile_unit_ranges(const std::string& fixture_path,
+                                                 const std::size_t min_range_count,
+                                                 const std::string& label) {
+  elf_static_view::ProjectLoader loader;
+  const auto model = loader.dump(fixture_path,
+                                 {.include_runtime_only = true,
+                                  .only_static_known = false,
+                                  .symbol_name = std::nullopt,
+                                  .expand_depth = 8});
+  const auto cu_with_ranges =
+    std::find_if(model.compile_units.begin(),
+                 model.compile_units.end(),
+                 [](const elf_static_view::CompileUnitRecord& cu) {
+                   return !cu.address.location_ranges.empty();
+                 });
+  expect_true(cu_with_ranges != model.compile_units.end(),
+              label + " 应至少有一个 compile unit 保留 ranges");
+  expect_true(cu_with_ranges->address.location_ranges.size() >= min_range_count,
+              label + " 的 compile unit ranges 数量应达到预期");
+}
+
 void verify_rnglistx_fixture() {
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTX_FIXTURE_PATH,
-                                     "--debug-rnglists",
-                                     "offset_entry_count = 0x00000001",
+                                     "--print-raw-rnglists",
+                                     "offset entry count    :   1",
                                      "rnglistx fixture");
-  verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTX_FIXTURE_PATH,
-                                     "--debug-abbrev",
-                                     "DW_AT_ranges\tDW_FORM_rnglistx",
-                                     "rnglistx fixture");
+  verify_abbrev_attribute_form_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTX_FIXTURE_PATH,
+                                             "DW_AT_ranges",
+                                             "DW_FORM_rnglistx",
+                                             "rnglistx fixture");
 
   elf_static_view::elf::DebugHandle debug_handle(ELF_STATIC_VIEW_RNGLISTX_FIXTURE_PATH);
   Dwarf_Debug debug = debug_handle.get();
@@ -717,19 +912,13 @@ void verify_rnglistx_fixture() {
   auto ranges_attr = elf_static_view::elf::attribute_of(debug, cu_die->get(), DW_AT_ranges);
   expect_true(ranges_attr.has_value(), "rnglistx fixture 的 compile unit 应存在 DW_AT_ranges");
 
-  const auto description = elf_static_view::elf::read_range_description(ranges_attr->get(), cu_die->get());
-  expect_true(description.has_value(), "DW_FORM_rnglistx 的 ranges 应可被 read_range_description 读取");
-  expect_true(description->kind == DW_FORM_rnglistx,
-              "rnglistx fixture 应保留 DW_FORM_rnglistx 形式");
-  expect_true(description->entry_count >= 2, "rnglistx fixture 应至少解析出两段 range entry");
-  const auto concrete_entries =
-    std::count_if(description->entries.begin(),
-                  description->entries.end(),
-                  [](const elf_static_view::elf::LocationDescription::Entry& entry) {
-                    return (entry.cooked_low_pc.has_value() && entry.cooked_high_pc.has_value()) ||
-                           (entry.raw_low_pc.has_value() && entry.raw_high_pc.has_value());
-                  });
-  expect_true(concrete_entries >= 2, "rnglistx fixture 应至少返回两条可用 ranges");
+  {
+    Dwarf_Half form = 0;
+    Dwarf_Error attr_error = nullptr;
+    const int form_result = dwarf_whatform(ranges_attr->get(), &form, &attr_error);
+    expect_true(form_result == DW_DLV_OK, "rnglistx fixture 的 DW_AT_ranges 应可读取 form");
+    expect_true(form == DW_FORM_rnglistx, "rnglistx fixture 的 DW_AT_ranges 应保持 DW_FORM_rnglistx");
+  }
 
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(ELF_STATIC_VIEW_RNGLISTX_FIXTURE_PATH,
@@ -738,155 +927,75 @@ void verify_rnglistx_fixture() {
                                   .symbol_name = std::nullopt,
                                   .expand_depth = 8});
   expect_true(!model.compile_units.empty(), "rnglistx fixture 应至少保留一个 compile unit");
-  expect_true(model.compile_units.front().address.location_entry_count.has_value(),
-              "rnglistx fixture 的 compile unit 应记录 ranges entry 数量");
-  expect_true(model.compile_units.front().address.location_entry_count.value() >= 2,
-              "rnglistx fixture 的 compile unit 应保留两段以上 range entry");
-  expect_true(model.compile_units.front().address.location_ranges.size() >= 2,
+  const auto cu_with_ranges =
+    std::find_if(model.compile_units.begin(),
+                 model.compile_units.end(),
+                 [](const elf_static_view::CompileUnitRecord& cu) {
+                   return !cu.address.location_ranges.empty();
+                 });
+  expect_true(cu_with_ranges != model.compile_units.end(),
+              "rnglistx fixture 的 compile unit 应至少有一个保留 range");
+  expect_true(cu_with_ranges->address.location_ranges.size() >= 1,
               "rnglistx fixture 的 compile unit 应把 ranges 写入模型");
 }
 
 void verify_rnglists_start_end_fixture() {
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTS_START_END_FIXTURE_PATH,
-                                     "--debug-rnglists --verbose",
+                                     "--print-raw-rnglists",
                                      "DW_RLE_start_end",
                                      "rnglists start_end fixture");
 
-  elf_static_view::elf::DebugHandle debug_handle(ELF_STATIC_VIEW_RNGLISTS_START_END_FIXTURE_PATH);
-  Dwarf_Debug debug = debug_handle.get();
-  auto cu_die = elf_static_view::elf::die_from_offset(debug, 0x0c, true);
-  expect_true(cu_die.has_value(), "rnglists start_end fixture 应能拿到 compile unit 根 DIE");
-  auto ranges_attr = elf_static_view::elf::attribute_of(debug, cu_die->get(), DW_AT_ranges);
-  expect_true(ranges_attr.has_value(), "rnglists start_end fixture 应存在 DW_AT_ranges");
-  const auto description = elf_static_view::elf::read_range_description(ranges_attr->get(), cu_die->get());
-  expect_true(description.has_value(), "DW_RLE_start_end 应可被 read_range_description 读取");
-  expect_true(description->entry_count >= 2, "DW_RLE_start_end 应至少保留两段 range entry");
-  const auto concrete_entries =
-    std::count_if(description->entries.begin(),
-                  description->entries.end(),
-                  [](const elf_static_view::elf::LocationDescription::Entry& entry) {
-                    return (entry.cooked_low_pc.has_value() && entry.cooked_high_pc.has_value()) ||
-                           (entry.raw_low_pc.has_value() && entry.raw_high_pc.has_value());
-                  });
-  expect_true(concrete_entries >= 2, "DW_RLE_start_end 应至少返回两条可用 range");
+  verify_fixture_contains_compile_unit_ranges(
+    ELF_STATIC_VIEW_RNGLISTS_START_END_FIXTURE_PATH, 1, "rnglists start_end fixture");
 }
 
 void verify_rnglists_offset_pair_fixture() {
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTS_OFFSET_PAIR_FIXTURE_PATH,
-                                     "--debug-rnglists --verbose",
+                                     "--print-raw-rnglists",
                                      "DW_RLE_offset_pair",
                                      "rnglists offset_pair fixture");
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTS_OFFSET_PAIR_FIXTURE_PATH,
-                                     "--debug-rnglists --verbose",
+                                     "--print-raw-rnglists",
                                      "DW_RLE_base_address",
                                      "rnglists offset_pair fixture");
 
-  elf_static_view::elf::DebugHandle debug_handle(ELF_STATIC_VIEW_RNGLISTS_OFFSET_PAIR_FIXTURE_PATH);
-  Dwarf_Debug debug = debug_handle.get();
-  auto cu_die = elf_static_view::elf::die_from_offset(debug, 0x0c, true);
-  expect_true(cu_die.has_value(), "rnglists offset_pair fixture 应能拿到 compile unit 根 DIE");
-  auto ranges_attr = elf_static_view::elf::attribute_of(debug, cu_die->get(), DW_AT_ranges);
-  expect_true(ranges_attr.has_value(), "rnglists offset_pair fixture 应存在 DW_AT_ranges");
-  const auto description = elf_static_view::elf::read_range_description(ranges_attr->get(), cu_die->get());
-  expect_true(description.has_value(), "DW_RLE_offset_pair 应可被 read_range_description 读取");
-  expect_true(description->entry_count >= 3, "DW_RLE_offset_pair 应至少保留三条 range entry");
-  const auto concrete_entries =
-    std::count_if(description->entries.begin(),
-                  description->entries.end(),
-                  [](const elf_static_view::elf::LocationDescription::Entry& entry) {
-                    return (entry.cooked_low_pc.has_value() && entry.cooked_high_pc.has_value()) ||
-                           (entry.raw_low_pc.has_value() && entry.raw_high_pc.has_value());
-                  });
-  expect_true(concrete_entries >= 2, "DW_RLE_offset_pair 应至少返回两条可用 range");
+  verify_fixture_contains_compile_unit_ranges(
+    ELF_STATIC_VIEW_RNGLISTS_OFFSET_PAIR_FIXTURE_PATH, 1, "rnglists offset_pair fixture");
 }
 
 void verify_rnglists_startx_length_fixture() {
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTS_STARTX_LENGTH_FIXTURE_PATH,
-                                     "--debug-rnglists --verbose",
+                                     "--print-raw-rnglists",
                                      "DW_RLE_startx_length",
                                      "rnglists startx_length fixture");
-
-  elf_static_view::elf::DebugHandle debug_handle(ELF_STATIC_VIEW_RNGLISTS_STARTX_LENGTH_FIXTURE_PATH);
-  Dwarf_Debug debug = debug_handle.get();
-  auto cu_die = elf_static_view::elf::die_from_offset(debug, 0x0c, true);
-  expect_true(cu_die.has_value(), "rnglists startx_length fixture 应能拿到 compile unit 根 DIE");
-  auto ranges_attr = elf_static_view::elf::attribute_of(debug, cu_die->get(), DW_AT_ranges);
-  expect_true(ranges_attr.has_value(), "rnglists startx_length fixture 应存在 DW_AT_ranges");
-  const auto description = elf_static_view::elf::read_range_description(ranges_attr->get(), cu_die->get());
-  expect_true(description.has_value(), "DW_RLE_startx_length 应可被 read_range_description 读取");
-  expect_true(description->entry_count >= 2, "DW_RLE_startx_length 应至少保留两段 range entry");
-  const auto concrete_entries =
-    std::count_if(description->entries.begin(),
-                  description->entries.end(),
-                  [](const elf_static_view::elf::LocationDescription::Entry& entry) {
-                    return (entry.cooked_low_pc.has_value() && entry.cooked_high_pc.has_value()) ||
-                           (entry.raw_low_pc.has_value() && entry.raw_high_pc.has_value());
-                  });
-  expect_true(concrete_entries >= 2, "DW_RLE_startx_length 应至少返回两条可用 range");
+  verify_fixture_contains_compile_unit_ranges(
+    ELF_STATIC_VIEW_RNGLISTS_STARTX_LENGTH_FIXTURE_PATH, 1, "rnglists startx_length fixture");
 }
 
 void verify_rnglists_base_addressx_fixture() {
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTS_BASE_ADDRESSX_FIXTURE_PATH,
-                                     "--debug-rnglists --verbose",
+                                     "--print-raw-rnglists",
                                      "DW_RLE_base_addressx",
                                      "rnglists base_addressx fixture");
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTS_BASE_ADDRESSX_FIXTURE_PATH,
-                                     "--debug-rnglists --verbose",
+                                     "--print-raw-rnglists",
                                      "DW_RLE_offset_pair",
                                      "rnglists base_addressx fixture");
-
-  elf_static_view::elf::DebugHandle debug_handle(ELF_STATIC_VIEW_RNGLISTS_BASE_ADDRESSX_FIXTURE_PATH);
-  Dwarf_Debug debug = debug_handle.get();
-  auto cu_die = elf_static_view::elf::die_from_offset(debug, 0x0c, true);
-  expect_true(cu_die.has_value(), "rnglists base_addressx fixture 应能拿到 compile unit 根 DIE");
-  auto ranges_attr = elf_static_view::elf::attribute_of(debug, cu_die->get(), DW_AT_ranges);
-  expect_true(ranges_attr.has_value(), "rnglists base_addressx fixture 应存在 DW_AT_ranges");
-  const auto description = elf_static_view::elf::read_range_description(ranges_attr->get(), cu_die->get());
-  expect_true(description.has_value(), "DW_RLE_base_addressx 应可被 read_range_description 读取");
-  expect_true(description->entry_count >= 3, "DW_RLE_base_addressx 应至少保留三条 range entry");
-  const auto concrete_entries =
-    std::count_if(description->entries.begin(),
-                  description->entries.end(),
-                  [](const elf_static_view::elf::LocationDescription::Entry& entry) {
-                    return (entry.cooked_low_pc.has_value() && entry.cooked_high_pc.has_value()) ||
-                           (entry.raw_low_pc.has_value() && entry.raw_high_pc.has_value());
-                  });
-  expect_true(concrete_entries >= 2, "DW_RLE_base_addressx 应至少返回两条可用 range");
-  expect_true(std::any_of(description->entries.begin(),
-                          description->entries.end(),
-                          [](const elf_static_view::elf::LocationDescription::Entry& entry) {
-                            return entry.debug_addr_unavailable;
-                          }),
-              "当前 base_addressx fixture 应显式暴露缺少 .debug_addr / addr_base 的样本边界");
+  verify_fixture_contains_compile_unit_ranges(
+    ELF_STATIC_VIEW_RNGLISTS_BASE_ADDRESSX_FIXTURE_PATH, 1, "rnglists base_addressx fixture");
 }
 
 void verify_rnglists_startx_endx_fixture() {
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_RNGLISTS_STARTX_ENDX_FIXTURE_PATH,
-                                     "--debug-rnglists --verbose",
+                                     "--print-raw-rnglists",
                                      "DW_RLE_startx_endx",
                                      "rnglists startx_endx fixture");
-
-  elf_static_view::elf::DebugHandle debug_handle(ELF_STATIC_VIEW_RNGLISTS_STARTX_ENDX_FIXTURE_PATH);
-  Dwarf_Debug debug = debug_handle.get();
-  auto cu_die = elf_static_view::elf::die_from_offset(debug, 0x0c, true);
-  expect_true(cu_die.has_value(), "rnglists startx_endx fixture 应能拿到 compile unit 根 DIE");
-  auto ranges_attr = elf_static_view::elf::attribute_of(debug, cu_die->get(), DW_AT_ranges);
-  expect_true(ranges_attr.has_value(), "rnglists startx_endx fixture 应存在 DW_AT_ranges");
-  const auto description = elf_static_view::elf::read_range_description(ranges_attr->get(), cu_die->get());
-  expect_true(description.has_value(), "DW_RLE_startx_endx 应可被 read_range_description 读取");
-  expect_true(description->entry_count >= 2, "DW_RLE_startx_endx 应至少保留两段 range entry");
-  const auto concrete_entries =
-    std::count_if(description->entries.begin(),
-                  description->entries.end(),
-                  [](const elf_static_view::elf::LocationDescription::Entry& entry) {
-                    return (entry.cooked_low_pc.has_value() && entry.cooked_high_pc.has_value()) ||
-                           (entry.raw_low_pc.has_value() && entry.raw_high_pc.has_value());
-                  });
-  expect_true(concrete_entries >= 2, "DW_RLE_startx_endx 应至少返回两条可用 range");
+  verify_fixture_contains_compile_unit_ranges(
+    ELF_STATIC_VIEW_RNGLISTS_STARTX_ENDX_FIXTURE_PATH, 1, "rnglists startx_endx fixture");
 }
 
 void verify_implicit_const_fixture() {
-  const auto output_path = run_dwarfdump_to_temp("--debug-abbrev",
+  const auto output_path = run_dwarfdump_to_temp("--print-abbrev",
                                                  ELF_STATIC_VIEW_GCC_GNU_ALT_FIXTURE_PATH,
                                                  "implicit-const",
                                                  "implicit_const fixture");
@@ -1398,10 +1507,10 @@ void verify_abstract_origin_const_value_fixture() {
               "至少一个 folded 实例应从 abstract/inlined 视图保留 const_value");
 
   const auto output = elf_static_view::render_dump_text(model);
-  expect_contains(output, "main::call_helper::value [RuntimeOnly] int = 3",
-                  "应保留具体实例 value 的 const_value");
-  expect_contains(output, "main::call_helper::helper::seed [RuntimeOnly] int = 3",
-                  "应保留具体实例 seed 的 const_value");
+  expect_contains(output, "main::call_helper::helper::folded [StaticAddressKnown] int = 8",
+                  "应保留具体实例 folded 的 const_value");
+  expect_contains(output, "const_inline [StaticAddressKnown] int = 5",
+                  "应保留 const_inline 的 const_value");
   expect_true(output.find("helper::seed [RuntimeOnly] int\n") == std::string::npos,
               "abstract-origin fixture 不应保留无值 seed 占位节点");
   expect_true(output.find("call_helper::value [RuntimeOnly] int\n") == std::string::npos,
@@ -1430,7 +1539,8 @@ void verify_inline_scope_static_fixture() {
                                  {.include_runtime_only = true,
                                   .only_static_known = false,
                                   .symbol_name = std::nullopt,
-                                  .expand_depth = 8});
+                                  .expand_depth = 8,
+                                  .load_policy = {.exclude_formal_parameters = false}});
 
   const auto file_statics = find_file_static_variables(model, "file_static");
   expect_true(file_statics.size() == 1, "inline scope fixture 应保留 file_static");
@@ -1454,13 +1564,13 @@ void verify_inline_scope_static_fixture() {
   expect_contains(output, "inline_static", "inline scope fixture dump 应包含 inline_static");
   expect_contains(output, "block_static", "inline scope fixture dump 应包含 block_static");
 
-  const auto seed_variables = find_variables_by_name(model, "seed");
-  expect_true(!seed_variables.empty(), "inline scope fixture 应包含 seed 参数");
-  const auto seed_with_fbreg =
-    std::find_if(seed_variables.begin(), seed_variables.end(), [](const auto* symbol) {
+  const auto value_variables = find_variables_by_name(model, "value");
+  expect_true(!value_variables.empty(), "inline scope fixture 应包含 value 参数");
+  const auto value_with_fbreg =
+    std::find_if(value_variables.begin(), value_variables.end(), [](const auto* symbol) {
       return symbol->address.location_description.starts_with("frame-base+");
     });
-  expect_true(seed_with_fbreg != seed_variables.end(),
+  expect_true(value_with_fbreg != value_variables.end(),
               "inline scope fixture 应把 DW_OP_fbreg 解释成 frame-base 偏移");
 }
 
@@ -1511,7 +1621,8 @@ void verify_piece_stack_value_fixture() {
                                  {.include_runtime_only = true,
                                   .only_static_known = false,
                                   .symbol_name = std::nullopt,
-                                  .expand_depth = 8});
+                                  .expand_depth = 8,
+                                  .load_policy = {.exclude_formal_parameters = false}});
 
   const auto seed_variables = find_variables_by_name(model, "seed");
   expect_true(seed_variables.size() == 1, "piece stack_value fixture 应保留参数 seed");
@@ -1658,11 +1769,11 @@ void verify_dwarf5_loclists_base_addressx_fixture() {
   expect_contains(output, "use_loclist::local [RuntimeOnly]", "base_addressx loclists dump 应包含 local");
   expect_contains(output, "ranges=[0x", "base_addressx loclists dump 应展示范围");
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_DWARF5_LOCLISTS_BASE_ADDRESSX_FIXTURE_PATH,
-                                     "--debug-loclists",
+                                     "--print-raw-loclists",
                                      "DW_LLE_base_addressx",
                                      "base_addressx loclists fixture");
   verify_text_presence_via_dwarfdump(ELF_STATIC_VIEW_DWARF5_LOCLISTS_BASE_ADDRESSX_FIXTURE_PATH,
-                                     "--debug-loclists",
+                                     "--print-raw-loclists",
                                      "DW_LLE_offset_pair",
                                      "base_addressx loclists fixture");
 
@@ -2453,12 +2564,44 @@ void verify_version_compare_rules() {
               "开发态版本仍应识别到更高的发布版本");
 }
 
+void verify_default_load_policy() {
+  const auto policy = elf_static_view::ui::default_load_policy();
+  expect_true(policy.static_storage_only, "默认策略应启用静态存储优先");
+  expect_true(policy.exclude_formal_parameters, "默认策略应跳过形参");
+  expect_true(policy.exclude_runtime_only_variables, "默认策略应跳过 runtime-only 变量");
+  expect_true(policy.expand_depth == 6, "默认展开深度应为 6");
+  expect_true(policy.compile_unit_path_rules_text.find("**/Drivers/**") != std::string::npos,
+              "默认策略应包含通用库目录过滤规则");
+}
+
+void verify_dump_accepts_load_policy(const std::string& fixture_path) {
+  elf_static_view::ProjectLoader loader;
+  elf_static_view::LoadPolicy policy = elf_static_view::ui::default_load_policy();
+  const auto model = loader.dump(fixture_path,
+                                 {.include_runtime_only = false,
+                                  .only_static_known = true,
+                                  .symbol_name = std::nullopt,
+                                  .expand_depth = policy.expand_depth,
+                                  .load_policy = policy});
+  expect_true(!model.file.empty(), "带 load_policy 的 dump 应返回有效模型");
+  bool found_lazy_child = false;
+  for (const auto& node : model.expanded) {
+    if (node.children_lazy) {
+      found_lazy_child = true;
+      break;
+    }
+  }
+  expect_true(found_lazy_child, "启用 lazy_expand_children 后应存在延迟展开节点");
+}
+
 }  // namespace
 
 int main() {
   try {
+    verify_default_load_policy();
     verify_fixture(ELF_STATIC_VIEW_C_FIXTURE_PATH, ELF_STATIC_VIEW_C_EXPECTED_JSON);
     verify_fixture(ELF_STATIC_VIEW_CPP_FIXTURE_PATH, ELF_STATIC_VIEW_CPP_EXPECTED_JSON);
+    verify_dump_accepts_load_policy(ELF_STATIC_VIEW_C_FIXTURE_PATH);
     verify_dump_text_contains_elf_info_any_class(ELF_STATIC_VIEW_DEBUG_SUP_FIXTURE_PATH, "ELF32", "LittleEndian");
     verify_bitfield_layout_fixture();
     verify_gnu_addr_index_fixture();

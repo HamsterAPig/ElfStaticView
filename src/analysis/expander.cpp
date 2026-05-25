@@ -3,6 +3,7 @@
 #include "analysis/model_utils.hpp"
 
 #include <algorithm>
+#include <unordered_map>
 
 namespace elf_static_view::analysis {
 
@@ -25,20 +26,36 @@ std::vector<ExpandedNode> Expander::build(const std::vector<VariableRecord>& var
     nodes.push_back(expand_variable(variable));
   }
   std::vector<ExpandedNode> deduplicated;
+  std::unordered_map<std::string, std::size_t> index_by_path;
+  deduplicated.reserve(nodes.size());
   for (auto& node : nodes) {
-    auto existing = std::find_if(deduplicated.begin(), deduplicated.end(), [&](const ExpandedNode& item) {
-      return item.path == node.path;
-    });
-    if (existing == deduplicated.end()) {
+    const auto existing = index_by_path.find(node.path);
+    if (existing == index_by_path.end()) {
+      index_by_path.emplace(node.path, deduplicated.size());
       deduplicated.push_back(std::move(node));
       continue;
     }
-    if (existing->availability != Availability::StaticAddressKnown &&
+    if (deduplicated[existing->second].availability != Availability::StaticAddressKnown &&
         node.availability == Availability::StaticAddressKnown) {
-      *existing = std::move(node);
+      deduplicated[existing->second] = std::move(node);
     }
   }
   return deduplicated;
+}
+
+std::vector<ExpandedNode> Expander::expand_children(const ExpandedNode& node) const {
+  const auto* type = find_type(node.type_id);
+  if (type == nullptr) {
+    return {};
+  }
+  auto rebuilt = expand_type(node.path,
+                             node.display_name,
+                             type,
+                             node.availability,
+                             node.absolute_address,
+                             node.relative_offset,
+                             node.depth);
+  return rebuilt.children;
 }
 
 ExpandedNode Expander::expand_variable(const VariableRecord& variable) const {
@@ -63,9 +80,11 @@ ExpandedNode Expander::expand_type(const std::string& path,
   ExpandedNode node;
   node.path = path;
   node.display_name = display_name;
+  node.type_id = type != nullptr ? type->id : "type@unknown";
   node.availability = availability;
   node.absolute_address = absolute_address;
   node.relative_offset = relative_offset;
+  node.depth = depth;
   if (type == nullptr) {
     node.type_name = "<unknown>";
     node.type_kind = TypeKind::Unknown;
@@ -90,6 +109,10 @@ ExpandedNode Expander::expand_type(const std::string& path,
       node.array_stride = type->byte_size.value() / total_count;
     }
     if (element_type != nullptr) {
+      node.children_lazy = true;
+      if (depth > 0) {
+        return node;
+      }
       const auto stride = node.array_stride.value_or(0);
       for (std::uint64_t index = 0; index < total_count; ++index) {
         std::optional<std::uint64_t> child_address;
@@ -111,6 +134,10 @@ ExpandedNode Expander::expand_type(const std::string& path,
   // 这里统一展开聚合类型，保证 CLI 和后续 GUI 都消费同一棵结构树。
   if (type->kind == TypeKind::Struct || type->kind == TypeKind::Class ||
       type->kind == TypeKind::Union) {
+    node.children_lazy = true;
+    if (depth > 0) {
+      return node;
+    }
     for (const auto& base : type->bases) {
       const auto* base_type = find_type(base.type.id);
       std::optional<std::uint64_t> child_address;

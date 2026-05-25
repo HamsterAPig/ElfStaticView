@@ -11,6 +11,12 @@ find_program(
   REQUIRED
 )
 find_program(
+  ELF_STATIC_VIEW_GCC
+  NAMES gcc.exe gcc
+  HINTS "D:/ProgramData/ClionComplier/mingw-w64/bin" "D:/ProgramData/mingw64/bin"
+  REQUIRED
+)
+find_program(
   ELF_STATIC_VIEW_GXX
   NAMES g++.exe g++
   HINTS "D:/ProgramData/ClionComplier/mingw-w64/bin"
@@ -222,14 +228,20 @@ function(add_gcc_dwarf5_objcopy_fixture target source_file language_standard)
   get_filename_component(source_name "${source_file}" NAME_WE)
   set(intermediate_file "${FIXTURE_OUTPUT_DIR}/${source_name}.gcc.exe")
   set(output_file "${FIXTURE_OUTPUT_DIR}/${target}")
+  set(compiler "${ELF_STATIC_VIEW_GXX}")
+  set(language_args "${language_standard}")
+  if("${language_standard}" STREQUAL "-x c")
+    set(compiler "${ELF_STATIC_VIEW_GCC}")
+    set(language_args "-x" "c")
+  endif()
   add_custom_command(
     OUTPUT "${output_file}"
     COMMAND
-      "${ELF_STATIC_VIEW_GXX}"
+      "${compiler}"
       "-g"
       "-gdwarf-5"
       "-O0"
-      "${language_standard}"
+      ${language_args}
       "-o"
       "${intermediate_file}"
       "${CMAKE_CURRENT_SOURCE_DIR}/${source_file}"
@@ -277,10 +289,43 @@ function(add_gcc_dwarf64_objcopy_fixture target source_file language_standard)
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
-add_linux_elf_fixture(static_vars_c.elf fixtures/c/static_vars.c "${ELF_STATIC_VIEW_CLANG}" "-std=c17" "-O0")
-add_patched_elf_fixture(gnu_addr_index.elf "${static_vars_c.elf_OUTPUT}" fixtures/scripts/patch_addrx_to_gnu_addr_index.ps1)
-add_linux_elf_fixture(atomic_type.elf fixtures/c/atomic_type.c "${ELF_STATIC_VIEW_CLANG}" "-std=c17" "-O0")
+function(add_gcc_dwarf5_objcopy_fixture_from_sources target)
+  get_filename_component(target_name "${target}" NAME_WE)
+  set(intermediate_file "${FIXTURE_OUTPUT_DIR}/${target_name}.gcc.exe")
+  set(output_file "${FIXTURE_OUTPUT_DIR}/${target}")
+  set(source_paths)
+  foreach(source_file IN LISTS ARGN)
+    list(APPEND source_paths "${CMAKE_CURRENT_SOURCE_DIR}/${source_file}")
+  endforeach()
+  add_custom_command(
+    OUTPUT "${output_file}"
+    COMMAND
+      "${ELF_STATIC_VIEW_GCC}"
+      "-g"
+      "-gdwarf-5"
+      "-O0"
+      "-std=c17"
+      ${source_paths}
+      "-o"
+      "${intermediate_file}"
+    COMMAND
+      "${ELF_STATIC_VIEW_OBJCOPY}"
+      "-O"
+      "elf64-x86-64"
+      "${intermediate_file}"
+      "${output_file}"
+    DEPENDS ${source_paths}
+    VERBATIM
+    COMMENT "Building GCC DWARF5 objcopy fixture ${target}"
+  )
+  add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
+endfunction()
+
+add_gcc_dwarf5_objcopy_fixture(static_vars_c.elf fixtures/c/static_vars.c "-x c")
+add_gcc_dwarf5_objcopy_fixture(atomic_type.elf fixtures/c/atomic_type.c "-x c")
 add_linux_elf_fixture(static_vars_cpp.elf fixtures/cpp/static_vars.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
+add_patched_elf_fixture(gnu_addr_index.elf "${static_vars_cpp.elf_OUTPUT}" fixtures/scripts/patch_addrx_to_gnu_addr_index.ps1)
 add_gcc_dwarf5_objcopy_fixture(gcc_dwarf5_strp.elf fixtures/cpp/debug_sup_minimal.cpp "-std=c++20")
 add_gcc_dwarf64_objcopy_fixture(gcc_dwarf64_ref8.elf fixtures/cpp/debug_sup_minimal.cpp "-std=c++20")
 add_linux_elf_fixture(inline_scope_static.elf fixtures/cpp/inline_scope_static.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
@@ -386,10 +431,8 @@ add_patched_elf_fixture(dwarf5_loclists_startx_length.elf "${dwarf5_loclists_bas
 add_patched_elf_fixture(dwarf5_loclists_start_length.elf "${dwarf5_loclists_base_addressx.elf_OUTPUT}" fixtures/scripts/patch_loclists_start_length.ps1 -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_linux_elf_fixture(specification_static.elf fixtures/cpp/specification_static.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-O0")
 add_linux_elf_fixture(thread_local_tls.elf fixtures/cpp/thread_local_tls.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-O0")
-add_linux_elf_fixture_from_sources(
+add_gcc_dwarf5_objcopy_fixture_from_sources(
   multi_cu_static_vars.elf
-  "${ELF_STATIC_VIEW_CLANG}"
-  "-std=c17"
   fixtures/c/multi_cu/main.c
   fixtures/c/multi_cu/unit_a.c
   fixtures/c/multi_cu/unit_b.c
@@ -397,6 +440,12 @@ add_linux_elf_fixture_from_sources(
 
 add_executable(elf_static_view_tests
   test_main.cpp
+  ../src/ui/version_check.cpp
+)
+
+add_executable(
+  elf_static_view_perf_tests
+  perf_policy_tests.cpp
   ../src/ui/version_check.cpp
 )
 
@@ -427,8 +476,23 @@ target_include_directories(
     "${CMAKE_SOURCE_DIR}/src"
     "${CMAKE_BINARY_DIR}/generated"
 )
+target_include_directories(
+  elf_static_view_perf_tests
+  PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_SOURCE_DIR}/src"
+    "${CMAKE_BINARY_DIR}/generated"
+)
 target_link_libraries(
   elf_static_view_tests
+  PRIVATE
+    elf_static_view_core
+    elf_static_view_ui_support
+    yaml-cpp::yaml-cpp
+    elf_static_view_warnings
+)
+target_link_libraries(
+  elf_static_view_perf_tests
   PRIVATE
     elf_static_view_core
     elf_static_view_ui_support
@@ -438,7 +502,10 @@ target_link_libraries(
 
 if(WIN32)
   target_link_libraries(elf_static_view_tests PRIVATE winhttp)
+  target_link_libraries(elf_static_view_perf_tests PRIVATE winhttp)
 endif()
+
+add_dependencies(elf_static_view_perf_tests elf_static_view_version_header)
 
 add_dependencies(elf_static_view_tests static_vars_c.elf_fixture static_vars_cpp.elf_fixture)
 add_dependencies(elf_static_view_tests gnu_addr_index.elf_fixture)
@@ -561,3 +628,4 @@ target_compile_definitions(
 )
 
 add_test(NAME elf_static_view_tests COMMAND elf_static_view_tests)
+add_test(NAME elf_static_view_perf_tests COMMAND elf_static_view_perf_tests)
