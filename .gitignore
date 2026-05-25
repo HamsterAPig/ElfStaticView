@@ -1,6 +1,8 @@
 build/
 build-*/
 build_*/
+build */
 cmake-build-*
 .idea/
 tmp/
+__pycache__/

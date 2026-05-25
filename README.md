@@ -34,9 +34,10 @@ git submodule update --init --recursive
 - 支持 C++20 的编译器
 - Git
 - OpenGL 开发环境
-- Ninja 或 Visual Studio 2022 生成器
+- Ninja、Visual Studio 2022 或 MinGW Makefiles 生成器
+- Python 3 解释器（测试 fixture patch 脚本使用标准库实现）
 
-测试目标会在构建阶段生成 Linux ELF fixture。按照当前 `tests/CMakeLists.txt` 的真实实现，还需要本机可用的 `clang`、`clang++` 和 `lld`；在 Windows 下会优先尝试 `D:/ProgramData/ClionComplier/ClangLLVM/bin`。
+测试目标会在构建阶段生成 Linux ELF fixture。按照当前 `tests/CMakeLists.txt` 的真实实现，还需要本机 `PATH` 或 CMake cache 中可用的 `clang`、`clang++`、`gcc`、`g++`、`objcopy`、`llvm-objcopy`、`llvm-dwp` 和 `lld`。如工具不在 `PATH`，可在配置时显式传入 `-DELF_STATIC_VIEW_CLANG=...`、`-DELF_STATIC_VIEW_LLVM_OBJCOPY=...` 等 cache 变量。
 
 ## 构建
 
@@ -176,4 +177,3 @@ load_policy:
 - `3rdparty/spdlog/LICENSE`
 - `3rdparty/yaml-cpp/LICENSE`
 - `3rdparty/libdwarf-code/src/lib/libdwarf/COPYING`
-
