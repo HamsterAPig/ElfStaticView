@@ -249,7 +249,8 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
   const auto label =
     node.display_name + " [" + node.type_name + "] @ " +
     elf_static_view::format_address_summary(node, state.address_bias);
-  const bool opened = ImGui::TreeNodeEx(static_cast<const void*>(&node), flags, "%s", label.c_str());
+  // 懒加载子节点会在每帧重建，必须使用稳定路径作为 ImGui ID，避免展开状态抖动。
+  const bool opened = ImGui::TreeNodeEx(node.path.c_str(), flags, "%s", label.c_str());
   if (ImGui::IsItemClicked()) {
     state.selected_node = nullptr;
     state.selected_node_path = node.path;
