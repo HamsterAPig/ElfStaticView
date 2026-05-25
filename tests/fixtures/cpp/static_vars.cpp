@@ -8,6 +8,9 @@ struct Item {
   int value;
 };
 
+using MemberPointer = int Item::*;
+MemberPointer global_item_member_ptr = &Item::value;
+
 struct Derived : Base {
   static int shared;
   static int counter;

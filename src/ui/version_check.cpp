@@ -127,6 +127,9 @@ YAML::Node load_existing_config_root(const std::filesystem::path& path) {
 }
 
 void write_config_root(const std::filesystem::path& path, const YAML::Node& root) {
+  if (const auto parent = path.parent_path(); !parent.empty()) {
+    std::filesystem::create_directories(parent);
+  }
   std::ofstream output(path, std::ios::binary | std::ios::trunc);
   if (!output.is_open()) {
     throw std::runtime_error("无法写入配置文件: " + path_to_log_text(path));
