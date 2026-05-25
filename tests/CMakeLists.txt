@@ -1,50 +1,39 @@
 find_program(
   ELF_STATIC_VIEW_CLANG
   NAMES clang.exe clang
-  HINTS "D:/ProgramData/ClionComplier/ClangLLVM/bin"
   REQUIRED
 )
 find_program(
   ELF_STATIC_VIEW_CLANGXX
   NAMES clang++.exe clang++
-  HINTS "D:/ProgramData/ClionComplier/ClangLLVM/bin"
   REQUIRED
 )
 find_program(
   ELF_STATIC_VIEW_GCC
   NAMES gcc.exe gcc
-  HINTS "D:/ProgramData/ClionComplier/mingw-w64/bin" "D:/ProgramData/mingw64/bin"
   REQUIRED
 )
 find_program(
   ELF_STATIC_VIEW_GXX
   NAMES g++.exe g++
-  HINTS "D:/ProgramData/ClionComplier/mingw-w64/bin"
   REQUIRED
 )
 find_program(
   ELF_STATIC_VIEW_OBJCOPY
   NAMES objcopy.exe objcopy
-  HINTS "D:/ProgramData/ClionComplier/mingw-w64/bin"
   REQUIRED
 )
 find_program(
   ELF_STATIC_VIEW_LLVM_OBJCOPY
   NAMES llvm-objcopy.exe llvm-objcopy
-  HINTS "D:/ProgramData/ClionComplier/ClangLLVM/bin"
   REQUIRED
 )
 find_program(
   ELF_STATIC_VIEW_LLVM_DWP
   NAMES llvm-dwp.exe llvm-dwp
-  HINTS "D:/ProgramData/ClionComplier/ClangLLVM/bin"
   REQUIRED
 )
-find_program(
-  ELF_STATIC_VIEW_POWERSHELL
-  NAMES pwsh.exe pwsh powershell.exe powershell
-  REQUIRED
-)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(FIXTURE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/fixtures")
 file(MAKE_DIRECTORY "${FIXTURE_OUTPUT_DIR}")
@@ -185,18 +174,18 @@ function(add_patched_elf_fixture target input_file script_file)
   add_custom_command(
     OUTPUT "${output_file}"
     COMMAND
-      "${ELF_STATIC_VIEW_POWERSHELL}"
-      "-NoProfile"
-      "-ExecutionPolicy"
-      "Bypass"
-      "-File"
+      "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/scripts/patch_fixture.py"
       "${CMAKE_CURRENT_SOURCE_DIR}/${script_file}"
       "-InputPath"
       "${input_file}"
       "-OutputPath"
       "${output_file}"
       ${ARGN}
-    DEPENDS "${input_file}" "${CMAKE_CURRENT_SOURCE_DIR}/${script_file}"
+    DEPENDS
+      "${input_file}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/${script_file}"
+      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/scripts/patch_fixture.py"
     VERBATIM
     COMMENT "Building patched ELF fixture ${target}"
   )
