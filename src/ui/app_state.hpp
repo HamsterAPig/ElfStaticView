@@ -117,11 +117,14 @@ struct AppState {
   std::optional<std::string> pending_open_elf_path;
   std::optional<std::string> pending_import_snapshot_path;
   std::optional<std::string> pending_export_snapshot_path;
+  std::optional<std::string> pending_export_raw_dwarf_source_path;
+  std::optional<std::string> pending_export_raw_dwarf_output_path;
   bool pending_version_check = false;
   LoadPolicy load_policy;
   BackgroundLoadState background_load;
   UiTaskState import_snapshot_task;
   UiTaskState export_snapshot_task;
+  UiTaskState export_raw_dwarf_task;
   UiTaskState json_preview_task;
   UiTaskState version_check_task;
   std::string json_preview_text;

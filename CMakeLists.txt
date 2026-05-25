@@ -80,6 +80,7 @@ add_library(elf_static_view_core
   src/analysis/project_summary.cpp
   src/elf/elf_symbol_table.cpp
   src/elf/dwarf_reader.cpp
+  src/elf/raw_dwarf_reader.cpp
   src/elf/dwarf_wrappers.cpp
   src/logging/logger.cpp
 )

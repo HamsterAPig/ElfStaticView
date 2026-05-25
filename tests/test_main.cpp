@@ -7,6 +7,8 @@
 #include "ui/filter_matcher.hpp"
 #include "ui/version_check.hpp"
 
+#include <yaml-cpp/yaml.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
@@ -356,6 +358,35 @@ void verify_json_round_trip(const std::string& fixture_path) {
               "JSON 往返后应保留解析指标");
   expect_true(!parsed.expanded.empty() && parsed.expanded.front().type_id == model.expanded.front().type_id,
               "JSON 往返后应保留展开节点 type_id");
+}
+
+void verify_raw_dwarf_json_export(const std::string& fixture_path) {
+  elf_static_view::ProjectLoader loader;
+  const auto raw_json = loader.dump_raw_dwarf_json(fixture_path);
+  const auto parsed = YAML::Load(raw_json);
+  expect_true(parsed["schema_version"].as<int>() == 1, "raw DWARF JSON 应包含 schema_version");
+  expect_true(parsed["source_file"].as<std::string>() == fixture_path, "raw DWARF JSON 应保留源文件路径");
+  const auto status = parsed["status"].as<std::string>();
+  expect_true(status == "ok" || status == "partial", "raw DWARF JSON status 应为 ok 或 partial");
+  expect_true(parsed["compile_units"].IsSequence() && parsed["compile_units"].size() > 0,
+              "raw DWARF JSON 应包含 compile_units");
+  const auto root = parsed["compile_units"][0]["root"];
+  expect_true(root["tag"].as<std::string>().find("DW_TAG_compile_unit") != std::string::npos,
+              "raw DWARF JSON 根 DIE 应是 compile_unit");
+  const auto attributes = root["attributes"];
+  expect_true(attributes.IsSequence() && attributes.size() > 0,
+              "raw DWARF JSON 根 DIE 应包含 attributes");
+  bool has_readable_attribute = false;
+  for (const auto& attribute : attributes) {
+    const auto name = attribute["name"].as<std::string>();
+    if (name == "DW_AT_name" || name == "DW_AT_producer") {
+      has_readable_attribute = true;
+      expect_true(attribute["form"].as<std::string>().find("DW_FORM_") != std::string::npos,
+                  "raw DWARF JSON attribute 应包含 DW_FORM 名称");
+      expect_true(attribute["value"].IsDefined(), "raw DWARF JSON attribute 应包含 value");
+    }
+  }
+  expect_true(has_readable_attribute, "raw DWARF JSON 应导出可读 attribute name/form/value");
 }
 
 void verify_dump_text_contains_elf_info(const std::string& fixture_path) {
@@ -2707,6 +2738,14 @@ void verify_background_task_state_transitions() {
               "当前加载任务失败后应更新失败状态");
   expect_true(state.background_load.error_message == "second failed",
               "当前加载任务失败信息应写入 state");
+
+  elf_static_view::ui::begin_ui_task(state.export_raw_dwarf_task, 3, "raw.json");
+  expect_true(state.export_raw_dwarf_task.status == elf_static_view::ui::UiTaskStatus::Running,
+              "原始 DWARF 导出任务开始后应进入 Running");
+  expect_true(elf_static_view::ui::finish_ui_task(state.export_raw_dwarf_task, 3, "done"),
+              "原始 DWARF 导出任务完成应接受当前 task_id");
+  expect_true(state.export_raw_dwarf_task.status == elf_static_view::ui::UiTaskStatus::Succeeded,
+              "原始 DWARF 导出任务完成后应进入 Succeeded");
 }
 
 }  // namespace
@@ -2716,6 +2755,7 @@ int main() {
     verify_default_load_policy();
     verify_fixture(ELF_STATIC_VIEW_C_FIXTURE_PATH, ELF_STATIC_VIEW_C_EXPECTED_JSON);
     verify_fixture(ELF_STATIC_VIEW_CPP_FIXTURE_PATH, ELF_STATIC_VIEW_CPP_EXPECTED_JSON);
+    verify_raw_dwarf_json_export(ELF_STATIC_VIEW_C_FIXTURE_PATH);
     verify_dump_accepts_load_policy(ELF_STATIC_VIEW_C_FIXTURE_PATH);
     verify_class_array_nested_expand_fixture();
     verify_dump_text_contains_elf_info_any_class(ELF_STATIC_VIEW_DEBUG_SUP_FIXTURE_PATH, "ELF32", "LittleEndian");

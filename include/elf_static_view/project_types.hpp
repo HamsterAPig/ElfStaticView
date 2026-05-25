@@ -206,6 +206,42 @@ struct ProjectSnapshot {
   ProjectModel model;
 };
 
+struct RawDwarfAttribute {
+  std::string name;
+  std::string form;
+  std::string value;
+};
+
+struct RawDwarfDie {
+  std::uint64_t offset = 0;
+  std::string tag;
+  std::string name;
+  std::vector<RawDwarfAttribute> attributes;
+  std::vector<RawDwarfDie> children;
+};
+
+struct RawDwarfCompileUnit {
+  std::size_t index = 0;
+  std::uint16_t version = 0;
+  std::uint64_t header_length = 0;
+  std::uint64_t abbrev_offset = 0;
+  std::uint16_t address_size = 0;
+  std::uint16_t length_size = 0;
+  std::uint16_t extension_size = 0;
+  std::uint64_t next_header_offset = 0;
+  std::string unit_type;
+  RawDwarfDie root;
+};
+
+struct RawDwarfDocument {
+  std::uint64_t schema_version = 1;
+  std::string source_file;
+  std::string exported_at;
+  std::string status = "ok";
+  std::vector<RawDwarfCompileUnit> compile_units;
+  std::vector<std::string> errors;
+};
+
 struct ScanOptions {
   bool include_runtime_only = false;
   LoadPolicy load_policy {};

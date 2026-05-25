@@ -549,6 +549,66 @@ void append_expanded_node(std::ostringstream& stream, const ExpandedNode& node, 
   stream << '}';
 }
 
+void append_raw_dwarf_attribute(std::ostringstream& stream,
+                                const RawDwarfAttribute& attribute,
+                                const int level) {
+  append_indent(stream, level);
+  stream << "{\n";
+  append_string_field(stream, "name", attribute.name, level + 1);
+  append_string_field(stream, "form", attribute.form, level + 1);
+  append_string_field(stream, "value", attribute.value, level + 1, false);
+  append_indent(stream, level);
+  stream << '}';
+}
+
+void append_raw_dwarf_die(std::ostringstream& stream, const RawDwarfDie& die, const int level) {
+  append_indent(stream, level);
+  stream << "{\n";
+  append_number_field(stream, "offset", die.offset, level + 1);
+  append_string_field(stream, "tag", die.tag, level + 1);
+  append_string_field(stream, "name", die.name, level + 1);
+  append_array(stream,
+               "attributes",
+               die.attributes.size(),
+               level + 1,
+               [&](const std::size_t index, const int item_level) {
+                 append_raw_dwarf_attribute(stream, die.attributes[index], item_level);
+               });
+  append_array(stream,
+               "children",
+               die.children.size(),
+               level + 1,
+               [&](const std::size_t index, const int item_level) {
+                 append_raw_dwarf_die(stream, die.children[index], item_level);
+               },
+               false);
+  append_indent(stream, level);
+  stream << '}';
+}
+
+void append_raw_dwarf_compile_unit(std::ostringstream& stream,
+                                   const RawDwarfCompileUnit& compile_unit,
+                                   const int level) {
+  append_indent(stream, level);
+  stream << "{\n";
+  append_number_field(stream, "index", compile_unit.index, level + 1);
+  append_number_field(stream, "version", compile_unit.version, level + 1);
+  append_number_field(stream, "header_length", compile_unit.header_length, level + 1);
+  append_number_field(stream, "abbrev_offset", compile_unit.abbrev_offset, level + 1);
+  append_number_field(stream, "address_size", compile_unit.address_size, level + 1);
+  append_number_field(stream, "length_size", compile_unit.length_size, level + 1);
+  append_number_field(stream, "extension_size", compile_unit.extension_size, level + 1);
+  append_number_field(stream, "next_header_offset", compile_unit.next_header_offset, level + 1);
+  append_string_field(stream, "unit_type", compile_unit.unit_type, level + 1);
+  append_indent(stream, level + 1);
+  append_string(stream, "root");
+  stream << ": ";
+  append_raw_dwarf_die(stream, compile_unit.root, level + 1);
+  stream << '\n';
+  append_indent(stream, level);
+  stream << '}';
+}
+
 void append_project_model(std::ostringstream& stream,
                           const ProjectModel& model,
                           const int level,
@@ -832,6 +892,33 @@ std::string render_snapshot_json(const ProjectSnapshot& snapshot,
   append_string(stream, "model");
   stream << ": ";
   append_project_model(stream, exported.model, 1, false);
+  stream << "}\n";
+  return stream.str();
+}
+
+std::string render_raw_dwarf_json(const RawDwarfDocument& document) {
+  std::ostringstream stream;
+  stream << "{\n";
+  append_number_field(stream, "schema_version", document.schema_version, 1);
+  append_string_field(stream, "source_file", document.source_file, 1);
+  append_string_field(stream, "exported_at", document.exported_at, 1);
+  append_string_field(stream, "status", document.status, 1);
+  append_array(stream,
+               "compile_units",
+               document.compile_units.size(),
+               1,
+               [&](const std::size_t index, const int item_level) {
+                 append_raw_dwarf_compile_unit(stream, document.compile_units[index], item_level);
+               });
+  append_array(stream,
+               "errors",
+               document.errors.size(),
+               1,
+               [&](const std::size_t index, const int item_level) {
+                 append_indent(stream, item_level);
+                 append_string(stream, document.errors[index]);
+               },
+               false);
   stream << "}\n";
   return stream.str();
 }

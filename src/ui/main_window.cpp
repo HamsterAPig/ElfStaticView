@@ -332,6 +332,24 @@ void export_snapshot_from_dialog(AppState& state) {
   log_info(state, "已选择导出路径，准备后台导出: " + file_path.value());
 }
 
+void export_raw_dwarf_from_dialog(AppState& state) {
+  auto source_path = state.current_file_path;
+  if (source_path.empty()) {
+    const auto selected_path = open_elf_file_dialog();
+    if (!selected_path.has_value()) {
+      return;
+    }
+    source_path = selected_path.value();
+  }
+  const auto file_path = save_raw_dwarf_file_dialog("raw-dwarf.json");
+  if (!file_path.has_value()) {
+    return;
+  }
+  state.pending_export_raw_dwarf_source_path = source_path;
+  state.pending_export_raw_dwarf_output_path = file_path.value();
+  log_info(state, "已选择原始 DWARF 导出路径，准备后台导出: " + file_path.value());
+}
+
 void render_menu_bar(AppState& state) {
   if (!ImGui::BeginMainMenuBar()) {
     return;
@@ -376,6 +394,19 @@ void render_menu_bar(AppState& state) {
       }
     }
     if (state.export_snapshot_task.status == UiTaskStatus::Running) {
+      ImGui::EndDisabled();
+    }
+    if (state.export_raw_dwarf_task.status == UiTaskStatus::Running) {
+      ImGui::BeginDisabled();
+    }
+    if (ImGui::MenuItem("导出原始 DWARF JSON...")) {
+      try {
+        export_raw_dwarf_from_dialog(state);
+      } catch (const std::exception& error) {
+        log_error(state, error.what());
+      }
+    }
+    if (state.export_raw_dwarf_task.status == UiTaskStatus::Running) {
       ImGui::EndDisabled();
     }
     ImGui::Separator();
@@ -546,6 +577,14 @@ void render_variables_panel(AppState& state) {
   } else if (state.export_snapshot_task.status == UiTaskStatus::Failed &&
              !state.export_snapshot_task.message.empty()) {
     ImGui::TextWrapped("最近一次导出失败: %s", state.export_snapshot_task.message.c_str());
+    ImGui::Separator();
+  }
+  if (state.export_raw_dwarf_task.status == UiTaskStatus::Running) {
+    ImGui::Text("正在后台导出原始 DWARF: %s", state.export_raw_dwarf_task.detail.c_str());
+    ImGui::Separator();
+  } else if (state.export_raw_dwarf_task.status == UiTaskStatus::Failed &&
+             !state.export_raw_dwarf_task.message.empty()) {
+    ImGui::TextWrapped("最近一次原始 DWARF 导出失败: %s", state.export_raw_dwarf_task.message.c_str());
     ImGui::Separator();
   }
 
