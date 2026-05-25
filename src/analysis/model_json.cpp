@@ -58,6 +58,25 @@ void append_string_field(std::ostringstream& stream,
   stream << '\n';
 }
 
+void append_optional_string_field(std::ostringstream& stream,
+                                  const std::string& key,
+                                  const std::optional<std::string>& value,
+                                  const int level,
+                                  const bool trailing_comma = true) {
+  append_indent(stream, level);
+  append_string(stream, key);
+  stream << ": ";
+  if (value.has_value()) {
+    append_string(stream, value.value());
+  } else {
+    stream << "null";
+  }
+  if (trailing_comma) {
+    stream << ',';
+  }
+  stream << '\n';
+}
+
 template <typename T>
 void append_number_field(std::ostringstream& stream,
                          const std::string& key,
@@ -85,6 +104,15 @@ void append_bool_field(std::ostringstream& stream,
     stream << ',';
   }
   stream << '\n';
+}
+
+template <typename T>
+void append_optional_number_value(std::ostringstream& stream, const std::optional<T>& value) {
+  if (value.has_value()) {
+    stream << value.value();
+  } else {
+    stream << "null";
+  }
 }
 
 template <typename Writer>
@@ -201,6 +229,9 @@ TypeKind parse_type_kind(const std::string& value) {
   if (value == "Reference") {
     return TypeKind::Reference;
   }
+  if (value == "MemberPointer") {
+    return TypeKind::MemberPointer;
+  }
   if (value == "Typedef") {
     return TypeKind::Typedef;
   }
@@ -224,6 +255,12 @@ TypeKind parse_type_kind(const std::string& value) {
   }
   if (value == "Subroutine") {
     return TypeKind::Subroutine;
+  }
+  if (value == "Atomic") {
+    return TypeKind::Atomic;
+  }
+  if (value == "Unspecified") {
+    return TypeKind::Unspecified;
   }
   if (value == "Unknown") {
     return TypeKind::Unknown;
@@ -282,6 +319,43 @@ void append_address_info(std::ostringstream& stream,
   stream << ",\n";
   append_optional_number_field(stream, "bit_offset", address.bit_offset, level + 1);
   append_optional_number_field(stream, "bit_size", address.bit_size, level + 1);
+  append_optional_number_field(stream, "location_entry_count", address.location_entry_count, level + 1);
+  append_indent(stream, level + 1);
+  stream << "\"location_ranges\": [\n";
+  for (std::size_t index = 0; index < address.location_ranges.size(); ++index) {
+    const auto& range = address.location_ranges[index];
+    append_indent(stream, level + 2);
+    stream << "{\n";
+    append_indent(stream, level + 3);
+    stream << "\"raw_low_pc\": ";
+    append_optional_number_value(stream, range.raw_low_pc);
+    stream << ",\n";
+    append_indent(stream, level + 3);
+    stream << "\"raw_high_pc\": ";
+    append_optional_number_value(stream, range.raw_high_pc);
+    stream << ",\n";
+    append_indent(stream, level + 3);
+    stream << "\"cooked_low_pc\": ";
+    append_optional_number_value(stream, range.cooked_low_pc);
+    stream << ",\n";
+    append_indent(stream, level + 3);
+    stream << "\"cooked_high_pc\": ";
+    append_optional_number_value(stream, range.cooked_high_pc);
+    stream << ",\n";
+    append_bool_field(stream,
+                      "debug_addr_unavailable",
+                      range.debug_addr_unavailable,
+                      level + 3,
+                      false);
+    append_indent(stream, level + 2);
+    stream << '}';
+    if (index + 1 < address.location_ranges.size()) {
+      stream << ',';
+    }
+    stream << '\n';
+  }
+  append_indent(stream, level + 1);
+  stream << "],\n";
   append_string_field(stream, "location_description", address.location_description, level + 1, false);
   append_indent(stream, level);
   stream << '}';
@@ -409,6 +483,8 @@ void append_variable_record(std::ostringstream& stream, const VariableRecord& re
   append_type_ref(stream, "type", record.type, level + 1);
   append_string_array_inline(stream, "scope_path", record.scope_path, level + 1);
   append_optional_number_field(stream, "byte_size", record.byte_size, level + 1);
+  append_optional_number_field(stream, "const_value", record.const_value, level + 1);
+  append_optional_string_field(stream, "const_value_text", record.const_value_text, level + 1);
   append_bool_field(stream, "is_thread_local", record.is_thread_local, level + 1);
   append_bool_field(stream, "has_static_storage", record.has_static_storage, level + 1, false);
   append_indent(stream, level);
@@ -421,7 +497,12 @@ void append_compile_unit_record(std::ostringstream& stream, const CompileUnitRec
   append_string_field(stream, "id", unit.id, level + 1);
   append_string_field(stream, "name", unit.name, level + 1);
   append_string_field(stream, "producer", unit.producer, level + 1);
-  append_string_field(stream, "language", unit.language, level + 1, false);
+  append_string_field(stream, "language", unit.language, level + 1);
+  append_indent(stream, level + 1);
+  append_string(stream, "address");
+  stream << ": ";
+  append_address_info(stream, unit.address, level + 1);
+  stream << '\n';
   append_indent(stream, level);
   stream << '}';
 }
@@ -504,6 +585,20 @@ AddressInfo parse_address_info(const YAML::Node& node) {
   info.section_name = parse_optional_string(node, "section_name");
   info.bit_offset = parse_optional_number<std::uint64_t>(node, "bit_offset");
   info.bit_size = parse_optional_number<std::uint64_t>(node, "bit_size");
+  info.location_entry_count = parse_optional_number<std::uint64_t>(node, "location_entry_count");
+  if (const auto ranges = node["location_ranges"]; ranges && ranges.IsSequence()) {
+    for (const auto& range_node : ranges) {
+      AddressInfo::LocationRange range;
+      range.raw_low_pc = parse_optional_number<std::uint64_t>(range_node, "raw_low_pc");
+      range.raw_high_pc = parse_optional_number<std::uint64_t>(range_node, "raw_high_pc");
+      range.cooked_low_pc = parse_optional_number<std::uint64_t>(range_node, "cooked_low_pc");
+      range.cooked_high_pc = parse_optional_number<std::uint64_t>(range_node, "cooked_high_pc");
+      const auto debug_addr_unavailable = range_node["debug_addr_unavailable"];
+      range.debug_addr_unavailable =
+        debug_addr_unavailable ? debug_addr_unavailable.as<bool>() : false;
+      info.location_ranges.push_back(std::move(range));
+    }
+  }
   info.location_description = node["location_description"].as<std::string>();
   return info;
 }
@@ -581,6 +676,8 @@ VariableRecord parse_variable_record(const YAML::Node& node) {
     record.scope_path.push_back(item.as<std::string>());
   }
   record.byte_size = parse_optional_number<std::uint64_t>(node, "byte_size");
+  record.const_value = parse_optional_number<std::int64_t>(node, "const_value");
+  record.const_value_text = parse_optional_string(node, "const_value_text");
   record.is_thread_local = node["is_thread_local"].as<bool>();
   record.has_static_storage = node["has_static_storage"].as<bool>();
   return record;
@@ -592,6 +689,9 @@ CompileUnitRecord parse_compile_unit_record(const YAML::Node& node) {
   unit.name = node["name"].as<std::string>();
   unit.producer = node["producer"].as<std::string>();
   unit.language = node["language"].as<std::string>();
+  if (const auto address = node["address"]; address) {
+    unit.address = parse_address_info(address);
+  }
   return unit;
 }
 

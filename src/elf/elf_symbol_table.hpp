@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace elf_static_view::elf {
 
@@ -26,6 +27,9 @@ class ElfSymbolTable {
 public:
   [[nodiscard]] static ElfSymbolTable load(const std::string& file_path);
   [[nodiscard]] static ElfFileMetadata inspect_file(const std::string& file_path);
+  [[nodiscard]] static std::optional<std::vector<std::uint8_t>> read_section_bytes(
+    const std::string& file_path,
+    const std::string& section_name);
   [[nodiscard]] std::optional<SymbolInfo> find(const std::string& name) const;
   [[nodiscard]] const ElfFileMetadata& metadata() const;
 
