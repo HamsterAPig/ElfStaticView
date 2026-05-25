@@ -172,6 +172,11 @@ std::string read_all(const std::string& path) {
   return stream.str();
 }
 
+std::string normalize_path_separators(std::string path) {
+  std::replace(path.begin(), path.end(), '\\', '/');
+  return path;
+}
+
 void expect_true(const bool condition, const std::string& message) {
   if (!condition) {
     throw std::runtime_error("断言失败: " + message);
@@ -719,7 +724,9 @@ void verify_gcc_line_strp_fixture() {
   expect_true(comp_dir_attr.has_value(), "第一个 CU 应存在 DW_AT_comp_dir");
   const auto comp_dir = elf_static_view::elf::string_attr(comp_dir_attr->get());
   expect_true(comp_dir.has_value(), "DW_FORM_line_strp 的 comp_dir 应可被读取");
-  expect_true(comp_dir->find("build-vs") != std::string::npos,
+  const auto normalized_comp_dir = normalize_path_separators(*comp_dir);
+  const auto normalized_binary_dir = normalize_path_separators(ELF_STATIC_VIEW_TEST_BINARY_DIR);
+  expect_true(normalized_comp_dir.find(normalized_binary_dir) != std::string::npos,
               "DW_FORM_line_strp 的 comp_dir 应回到构建目录");
 }
 
