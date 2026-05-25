@@ -130,6 +130,7 @@ struct CompileUnitRecord {
   std::string name;
   std::string producer;
   std::string language;
+  std::string source_path;
   AddressInfo address;
 };
 
@@ -145,6 +146,7 @@ struct ExpandedNode {
   std::string path;
   std::string display_name;
   std::string type_name;
+  std::string type_id;
   TypeKind type_kind = TypeKind::Unknown;
   Availability availability = Availability::Unavailable;
   std::optional<std::uint64_t> absolute_address;
@@ -152,6 +154,8 @@ struct ExpandedNode {
   std::optional<std::uint64_t> byte_size;
   std::optional<std::uint64_t> array_count;
   std::optional<std::uint64_t> array_stride;
+  std::size_t depth = 0;
+  bool children_lazy = false;
   std::vector<ExpandedNode> children;
 };
 
@@ -164,6 +168,16 @@ struct ProjectSummary {
   std::size_t unavailable_count = 0;
 };
 
+struct ParseMetrics {
+  std::uint64_t dwarf_load_ms = 0;
+  std::uint64_t symbol_table_ms = 0;
+  std::uint64_t deduplicate_ms = 0;
+  std::uint64_t expand_ms = 0;
+  std::size_t variable_count_before_filter = 0;
+  std::size_t variable_count_after_filter = 0;
+  std::size_t skipped_compile_unit_count = 0;
+};
+
 struct ProjectModel {
   std::string file;
   ElfFileInfo elf_info;
@@ -171,6 +185,17 @@ struct ProjectModel {
   std::vector<TypeNode> types;
   std::vector<VariableRecord> symbols;
   std::vector<ExpandedNode> expanded;
+  ParseMetrics metrics;
+};
+
+struct LoadPolicy {
+  bool static_storage_only = true;
+  bool exclude_formal_parameters = true;
+  bool exclude_runtime_only_variables = true;
+  std::string compile_unit_path_rules_text;
+  std::size_t expand_depth = 6;
+  bool lazy_expand_children = true;
+  bool enable_parse_metrics = true;
 };
 
 struct ProjectSnapshot {
@@ -181,8 +206,45 @@ struct ProjectSnapshot {
   ProjectModel model;
 };
 
+struct RawDwarfAttribute {
+  std::string name;
+  std::string form;
+  std::string value;
+};
+
+struct RawDwarfDie {
+  std::uint64_t offset = 0;
+  std::string tag;
+  std::string name;
+  std::vector<RawDwarfAttribute> attributes;
+  std::vector<RawDwarfDie> children;
+};
+
+struct RawDwarfCompileUnit {
+  std::size_t index = 0;
+  std::uint16_t version = 0;
+  std::uint64_t header_length = 0;
+  std::uint64_t abbrev_offset = 0;
+  std::uint16_t address_size = 0;
+  std::uint16_t length_size = 0;
+  std::uint16_t extension_size = 0;
+  std::uint64_t next_header_offset = 0;
+  std::string unit_type;
+  RawDwarfDie root;
+};
+
+struct RawDwarfDocument {
+  std::uint64_t schema_version = 1;
+  std::string source_file;
+  std::string exported_at;
+  std::string status = "ok";
+  std::vector<RawDwarfCompileUnit> compile_units;
+  std::vector<std::string> errors;
+};
+
 struct ScanOptions {
   bool include_runtime_only = false;
+  LoadPolicy load_policy {};
 };
 
 struct DumpOptions {
@@ -190,6 +252,7 @@ struct DumpOptions {
   bool only_static_known = false;
   std::optional<std::string> symbol_name;
   std::size_t expand_depth = 8;
+  LoadPolicy load_policy {};
 };
 
 struct SnapshotExportOptions {

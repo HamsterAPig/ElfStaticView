@@ -87,11 +87,35 @@ bool read_yaml_bool(const YAML::Node& node, const char* key, const bool default_
   return node[key].as<bool>();
 }
 
+std::optional<std::string> validate_compile_unit_path_rules_text(const std::string& rules_text) {
+  std::istringstream lines(rules_text);
+  std::string line;
+  std::size_t line_number = 0;
+  while (std::getline(lines, line)) {
+    ++line_number;
+    std::string pattern = trim_copy(line);
+    if (pattern.empty() || pattern.starts_with('#')) {
+      continue;
+    }
+    if (pattern == "!") {
+      return "第 " + std::to_string(line_number) + " 行只有 `!`，缺少实际路径模式";
+    }
+  }
+  return std::nullopt;
+}
+
 std::optional<int> read_yaml_int(const YAML::Node& node, const char* key) {
   if (!node || !node[key]) {
     return std::nullopt;
   }
   return node[key].as<int>();
+}
+
+std::size_t read_yaml_size_t(const YAML::Node& node, const char* key, const std::size_t default_value) {
+  if (!node || !node[key]) {
+    return default_value;
+  }
+  return node[key].as<std::size_t>();
 }
 
 std::string read_text_file(const std::filesystem::path& path) {
@@ -224,7 +248,7 @@ ParsedUri parse_http_uri(const std::string& uri_text) {
   return parsed;
 }
 
-std::string http_get_text(const std::string& uri_text) {
+std::string http_get_text_impl(const std::string& uri_text) {
   const ParsedUri uri = parse_http_uri(uri_text);
   const HINTERNET session = WinHttpOpen(L"ElfStaticView/1.0",
                                         WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
@@ -284,13 +308,17 @@ std::string http_get_text(const std::string& uri_text) {
 
 #else
 
-std::string http_get_text(const std::string&) {
+std::string http_get_text_impl(const std::string&) {
   throw std::runtime_error("当前平台暂未实现版本检查 HTTP 客户端");
 }
 
 #endif
 
 }  // namespace
+
+std::string http_get_text(const std::string& uri_text) {
+  return http_get_text_impl(uri_text);
+}
 
 const ReleaseMetadata& default_release_metadata() {
   static const ReleaseMetadata metadata {
@@ -391,8 +419,32 @@ VersionCheckState parse_version_response_text(const std::string& response_text,
   return result;
 }
 
+LoadPolicy default_load_policy() {
+  LoadPolicy policy;
+  policy.compile_unit_path_rules_text =
+    "# 默认排除常见通用库目录\n"
+    "**/CMSIS/**\n"
+    "**/HAL/**\n"
+    "**/Drivers/**\n"
+    "**/Middlewares/**\n"
+    "**/gcc-arm-none-eabi/**\n"
+    "**/arm-none-eabi/**\n"
+    "!**/Core/**\n"
+    "!**/App/**\n";
+  return policy;
+}
+
+LoadPolicy load_cli_load_policy(const std::filesystem::path& executable_path) {
+  // CLI 复用同一份配置读取逻辑，避免与 UI 默认策略分叉。
+  AppState state;
+  load_app_config(state, executable_path);
+  return state.load_policy;
+}
+
 void load_app_config(AppState& state, const std::filesystem::path& executable_path) {
   state.config_path = config_path_for_executable(executable_path);
+  state.enable_background_loading = true;
+  state.load_policy = default_load_policy();
   if (!std::filesystem::exists(state.config_path)) {
     log_info(state, "未找到配置文件: " + path_to_log_text(state.config_path));
     log_info(state, "未配置 updates.check_uri，版本检查将回退到默认 GitHub Releases API。");
@@ -444,6 +496,31 @@ void load_app_config(AppState& state, const std::filesystem::path& executable_pa
     log_error(state, std::string("配置文件中的 ui.refresh_rate 无效: ") + error.what());
   }
 
+  const YAML::Node load_policy = root["load_policy"];
+  state.enable_background_loading =
+    read_yaml_bool(load_policy, "enable_background_loading", true);
+  state.load_policy.static_storage_only =
+    read_yaml_bool(load_policy, "default_static_storage_only", true);
+  state.load_policy.exclude_formal_parameters =
+    read_yaml_bool(load_policy, "exclude_formal_parameters", true);
+  state.load_policy.exclude_runtime_only_variables =
+    read_yaml_bool(load_policy, "exclude_runtime_only_variables", true);
+  state.load_policy.lazy_expand_children =
+    read_yaml_bool(load_policy, "lazy_expand_children", true);
+  state.load_policy.enable_parse_metrics =
+    read_yaml_bool(load_policy, "enable_parse_metrics", true);
+  state.load_policy.expand_depth = read_yaml_size_t(load_policy, "max_expand_depth", 6);
+  if (const std::string rules = read_yaml_scalar(load_policy, "compile_unit_path_rules"); !rules.empty()) {
+    if (const auto validation_error = validate_compile_unit_path_rules_text(rules);
+        validation_error.has_value()) {
+      log_error(state,
+                "配置文件中的 load_policy.compile_unit_path_rules 无效: " + validation_error.value() +
+                  "；将回退到默认规则。");
+    } else {
+      state.load_policy.compile_unit_path_rules_text = rules;
+    }
+  }
+
   const YAML::Node address_bias = root["address_bias"];
   state.persist_address_bias_to_config = read_yaml_bool(address_bias, "write_back", false);
   if (!state.persist_address_bias_to_config) {
@@ -483,6 +560,15 @@ void save_app_config(const AppState& state) {
   root["copy"]["address_base"] = copy_address_base_to_config_value(state.copy_address_base);
   root["copy"]["strip_hex_prefix"] = state.copy_hex_without_prefix;
   root["ui"]["refresh_rate"] = sanitize_ui_refresh_rate(state.ui_refresh_rate);
+  root["load_policy"]["enable_background_loading"] = state.enable_background_loading;
+  root["load_policy"]["default_static_storage_only"] = state.load_policy.static_storage_only;
+  root["load_policy"]["exclude_formal_parameters"] = state.load_policy.exclude_formal_parameters;
+  root["load_policy"]["exclude_runtime_only_variables"] =
+    state.load_policy.exclude_runtime_only_variables;
+  root["load_policy"]["compile_unit_path_rules"] = state.load_policy.compile_unit_path_rules_text;
+  root["load_policy"]["max_expand_depth"] = state.load_policy.expand_depth;
+  root["load_policy"]["lazy_expand_children"] = state.load_policy.lazy_expand_children;
+  root["load_policy"]["enable_parse_metrics"] = state.load_policy.enable_parse_metrics;
 
   YAML::Node address_bias = root["address_bias"];
   address_bias["write_back"] = state.persist_address_bias_to_config;
@@ -494,16 +580,6 @@ void save_app_config(const AppState& state) {
   }
 
   write_config_root(state.config_path, root);
-}
-
-void check_for_new_version(AppState& state) {
-  VersionCheckState effective_state = resolve_version_check_state(state);
-  const std::string response_text = http_get_text(effective_state.check_uri);
-  state.version_check = parse_version_response_text(response_text,
-                                                    effective_state.check_uri,
-                                                    effective_state.repository_url);
-  state.version_check->check_uri_uses_default = effective_state.check_uri_uses_default;
-  log_info(state, state.version_check->message);
 }
 
 }  // namespace elf_static_view::ui
