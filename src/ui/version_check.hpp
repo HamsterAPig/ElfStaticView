@@ -17,6 +17,7 @@ struct ReleaseMetadata {
 [[nodiscard]] const ReleaseMetadata& default_release_metadata();
 [[nodiscard]] int compare_version_strings(const std::string& left, const std::string& right);
 [[nodiscard]] std::string current_version_string();
+[[nodiscard]] std::string http_get_text(const std::string& uri_text);
 [[nodiscard]] VersionCheckState resolve_version_check_state(const AppState& state);
 [[nodiscard]] VersionCheckState parse_version_response_text(const std::string& response_text,
                                                             const std::string& check_uri,
@@ -25,6 +26,5 @@ struct ReleaseMetadata {
 [[nodiscard]] LoadPolicy load_cli_load_policy(const std::filesystem::path& executable_path);
 void load_app_config(AppState& state, const std::filesystem::path& executable_path);
 void save_app_config(const AppState& state);
-void check_for_new_version(AppState& state);
 
 }  // namespace elf_static_view::ui

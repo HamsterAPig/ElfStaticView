@@ -3,6 +3,7 @@
 #include "elf/elf_symbol_table.hpp"
 #include "elf_static_view/project.hpp"
 #include "platform/utf8.hpp"
+#include "ui/app_state.hpp"
 #include "ui/filter_matcher.hpp"
 #include "ui/version_check.hpp"
 
@@ -2594,6 +2595,25 @@ void verify_dump_accepts_load_policy(const std::string& fixture_path) {
   expect_true(found_lazy_child, "启用 lazy_expand_children 后应存在延迟展开节点");
 }
 
+void verify_background_task_state_transitions() {
+  elf_static_view::ui::AppState state;
+  elf_static_view::ui::begin_background_load(state, 1, "first.elf");
+  elf_static_view::ui::begin_background_load(state, 2, "second.elf");
+  expect_true(state.background_load.task_id == 2, "后发加载任务应覆盖当前 task_id");
+
+  elf_static_view::ProjectModel old_model;
+  old_model.file = "first.elf";
+  elf_static_view::ui::finish_background_load(state, 1, std::move(old_model));
+  expect_true(state.background_load.status == elf_static_view::ui::BackgroundLoadStatus::Loading,
+              "过期加载任务完成后不应覆盖当前加载状态");
+
+  elf_static_view::ui::fail_background_load(state, 2, "second failed");
+  expect_true(state.background_load.status == elf_static_view::ui::BackgroundLoadStatus::Failed,
+              "当前加载任务失败后应更新失败状态");
+  expect_true(state.background_load.error_message == "second failed",
+              "当前加载任务失败信息应写入 state");
+}
+
 }  // namespace
 
 int main() {
@@ -2679,6 +2699,7 @@ int main() {
     verify_version_check_resolution();
     verify_version_response_parsing();
     verify_version_compare_rules();
+    verify_background_task_state_transitions();
     std::cout << "all tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

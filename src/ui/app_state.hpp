@@ -2,6 +2,7 @@
 
 #include "elf_static_view/project.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <cstdint>
 #include <optional>
@@ -65,6 +66,21 @@ struct BackgroundLoadState {
   std::future<ProjectModel> future;
 };
 
+enum class UiTaskStatus {
+  Idle,
+  Running,
+  Succeeded,
+  Failed,
+};
+
+struct UiTaskState {
+  UiTaskStatus status = UiTaskStatus::Idle;
+  std::uint64_t task_id = 0;
+  std::string detail;
+  std::string message;
+  std::chrono::steady_clock::time_point started_at {};
+};
+
 enum class CopyAddressBase {
   Hex,
   Dec,
@@ -99,8 +115,19 @@ struct AppState {
   bool focus_variable_search = false;
   bool enable_background_loading = true;
   std::optional<std::string> pending_open_elf_path;
+  std::optional<std::string> pending_import_snapshot_path;
+  std::optional<std::string> pending_export_snapshot_path;
+  bool pending_version_check = false;
   LoadPolicy load_policy;
   BackgroundLoadState background_load;
+  UiTaskState import_snapshot_task;
+  UiTaskState export_snapshot_task;
+  UiTaskState json_preview_task;
+  UiTaskState version_check_task;
+  std::string json_preview_text;
+  std::string json_preview_cache_key;
+  std::string json_preview_error;
+  bool json_preview_dirty = true;
   std::optional<VersionCheckState> version_check;
   std::vector<std::string> log_messages;
   std::string error_message;
@@ -124,6 +151,9 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
 void begin_background_load(AppState& state, std::uint64_t task_id, const std::string& path);
 void finish_background_load(AppState& state, std::uint64_t task_id, ProjectModel model);
 void fail_background_load(AppState& state, std::uint64_t task_id, const std::string& message);
+void begin_ui_task(UiTaskState& task, std::uint64_t task_id, const std::string& detail);
+bool finish_ui_task(UiTaskState& task, std::uint64_t task_id, const std::string& message);
+bool fail_ui_task(UiTaskState& task, std::uint64_t task_id, const std::string& message);
 std::optional<ProjectSnapshot> build_snapshot(const AppState& state);
 std::optional<std::string> selected_node_json(const AppState& state);
 
