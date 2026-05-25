@@ -182,7 +182,9 @@ ProjectModel ProjectLoader::scan(const std::string& file_path, const ScanOptions
     throw std::runtime_error(build_load_error_message(file_path, error));
   }
   const auto expand_started_at = std::chrono::steady_clock::now();
-  analysis::Expander expander(model.types, load_policy.expand_depth);
+  analysis::Expander expander(model.types,
+                              load_policy.expand_depth,
+                              load_policy.lazy_expand_children);
   model.expanded = expander.build(model.symbols, options.include_runtime_only, false, std::nullopt);
   model.metrics.expand_ms = static_cast<std::uint64_t>(
     std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -200,7 +202,9 @@ ProjectModel ProjectLoader::dump(const std::string& file_path, const DumpOptions
     throw std::runtime_error(build_load_error_message(file_path, error));
   }
   const auto expand_started_at = std::chrono::steady_clock::now();
-  analysis::Expander expander(model.types, options.expand_depth);
+  analysis::Expander expander(model.types,
+                              load_policy.expand_depth,
+                              load_policy.lazy_expand_children);
   model.expanded = expander.build(model.symbols,
                                   options.include_runtime_only,
                                   options.only_static_known,

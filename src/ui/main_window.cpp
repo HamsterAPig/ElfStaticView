@@ -122,7 +122,9 @@ bool node_or_descendant_matches(const AppState& state, const ExpandedNode& node)
     }
   }
   if (node.children_lazy && state.project_model.has_value()) {
-    analysis::Expander expander(state.project_model->types, state.load_policy.expand_depth);
+    analysis::Expander expander(state.project_model->types,
+                                state.load_policy.expand_depth,
+                                state.load_policy.lazy_expand_children);
     const auto lazy_children = expander.expand_children(node);
     for (const auto& child : lazy_children) {
       if (node_or_descendant_matches(state, child)) {
@@ -285,7 +287,9 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
   if (opened) {
     const std::vector<ExpandedNode>* children = &node.children;
     if (node.children_lazy) {
-      analysis::Expander expander(state.project_model->types, state.load_policy.expand_depth);
+      analysis::Expander expander(state.project_model->types,
+                                  state.load_policy.expand_depth,
+                                  state.load_policy.lazy_expand_children);
       lazy_children = expander.expand_children(node);
       children = &lazy_children;
     }
