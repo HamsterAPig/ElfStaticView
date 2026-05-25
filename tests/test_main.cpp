@@ -209,6 +209,34 @@ void expect_contains(const std::string& content, const std::string& needle, cons
   return false;
 }
 
+[[nodiscard]] const elf_static_view::ExpandedNode*
+find_expanded_path(const std::vector<elf_static_view::ExpandedNode>& nodes,
+                   const std::string& expected_path) {
+  for (const auto& node : nodes) {
+    if (node.path == expected_path) {
+      return &node;
+    }
+    if (const auto* child = find_expanded_path(node.children, expected_path); child != nullptr) {
+      return child;
+    }
+  }
+  return nullptr;
+}
+
+[[nodiscard]] bool expanded_path_exists(const elf_static_view::ProjectModel& model,
+                                        const std::string& expected_path) {
+  return find_expanded_path(model.expanded, expected_path) != nullptr;
+}
+
+[[nodiscard]] bool contains_lazy_node(const std::vector<elf_static_view::ExpandedNode>& nodes) {
+  for (const auto& node : nodes) {
+    if (node.children_lazy || contains_lazy_node(node.children)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 [[nodiscard]] std::optional<std::string> parse_expected_path_line(const std::string& line) {
   constexpr std::string_view prefix = "\"path\": \"";
   if (!line.starts_with(prefix)) {
@@ -2595,6 +2623,66 @@ void verify_dump_accepts_load_policy(const std::string& fixture_path) {
   expect_true(found_lazy_child, "启用 lazy_expand_children 后应存在延迟展开节点");
 }
 
+void verify_class_array_nested_expand_fixture() {
+  elf_static_view::ProjectLoader loader;
+
+  {
+    elf_static_view::LoadPolicy policy = elf_static_view::ui::default_load_policy();
+    policy.expand_depth = 1;
+    policy.lazy_expand_children = true;
+    const auto model = loader.dump(ELF_STATIC_VIEW_CLASS_ARRAY_NESTED_EXPAND_FIXTURE_PATH,
+                                   {.include_runtime_only = true,
+                                    .only_static_known = false,
+                                    .symbol_name = std::nullopt,
+                                    .expand_depth = policy.expand_depth,
+                                    .load_policy = policy});
+    const auto* object = find_expanded_path(model.expanded, "demo::global_object");
+    expect_true(object != nullptr, "深度 1 应保留全局对象节点");
+    expect_true(find_expanded_path(object->children, "demo::global_object.items") != nullptr,
+                "深度 1 应展开到全局对象的一层成员");
+    expect_true(find_expanded_path(object->children, "demo::global_object.items[0]") == nullptr,
+                "深度 1 初始树不应直接展开数组元素");
+    const auto* items = find_expanded_path(model.expanded, "demo::global_object.items");
+    expect_true(items != nullptr && items->children_lazy, "深度截断后的数组成员应允许 UI 懒加载");
+  }
+
+  {
+    elf_static_view::LoadPolicy policy = elf_static_view::ui::default_load_policy();
+    policy.expand_depth = 3;
+    policy.lazy_expand_children = true;
+    const auto model = loader.dump(ELF_STATIC_VIEW_CLASS_ARRAY_NESTED_EXPAND_FIXTURE_PATH,
+                                   {.include_runtime_only = true,
+                                    .only_static_known = false,
+                                    .symbol_name = std::nullopt,
+                                    .expand_depth = policy.expand_depth,
+                                    .load_policy = policy});
+    expect_true(expanded_path_exists(model, "demo::global_object.items[0].nested"),
+                "深度 3 应展开到数组元素内的 nested 成员");
+    expect_true(!expanded_path_exists(model, "demo::global_object.items[0].nested.leaf"),
+                "深度 3 初始树不应越过配置深度展开 leaf");
+    const auto* nested = find_expanded_path(model.expanded, "demo::global_object.items[1].nested");
+    expect_true(nested != nullptr && nested->children_lazy, "嵌套成员应保留继续懒加载标记");
+  }
+
+  {
+    elf_static_view::LoadPolicy policy = elf_static_view::ui::default_load_policy();
+    policy.expand_depth = 0;
+    policy.lazy_expand_children = false;
+    const auto model = loader.dump(ELF_STATIC_VIEW_CLASS_ARRAY_NESTED_EXPAND_FIXTURE_PATH,
+                                   {.include_runtime_only = true,
+                                    .only_static_known = false,
+                                    .symbol_name = std::nullopt,
+                                    .expand_depth = policy.expand_depth,
+                                    .load_policy = policy});
+    expect_true(expanded_path_exists(model, "demo::global_object.items[0].nested.leaf"),
+                "深度 0 应不限制展开并包含第一个数组元素 leaf");
+    expect_true(expanded_path_exists(model, "demo::global_object.items[1].nested.leaf"),
+                "深度 0 应不限制展开并包含第二个数组元素 leaf");
+    expect_true(!contains_lazy_node(model.expanded),
+                "关闭 lazy_expand_children 后展开树不应包含 lazy 标记");
+  }
+}
+
 void verify_background_task_state_transitions() {
   elf_static_view::ui::AppState state;
   elf_static_view::ui::begin_background_load(state, 1, "first.elf");
@@ -2622,6 +2710,7 @@ int main() {
     verify_fixture(ELF_STATIC_VIEW_C_FIXTURE_PATH, ELF_STATIC_VIEW_C_EXPECTED_JSON);
     verify_fixture(ELF_STATIC_VIEW_CPP_FIXTURE_PATH, ELF_STATIC_VIEW_CPP_EXPECTED_JSON);
     verify_dump_accepts_load_policy(ELF_STATIC_VIEW_C_FIXTURE_PATH);
+    verify_class_array_nested_expand_fixture();
     verify_dump_text_contains_elf_info_any_class(ELF_STATIC_VIEW_DEBUG_SUP_FIXTURE_PATH, "ELF32", "LittleEndian");
     verify_bitfield_layout_fixture();
     verify_gnu_addr_index_fixture();

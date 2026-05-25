@@ -131,8 +131,8 @@ address_bias:
 - `load_policy.exclude_formal_parameters`：是否默认跳过函数形参，默认开启
 - `load_policy.exclude_runtime_only_variables`：是否默认跳过运行时变量，默认开启
 - `load_policy.compile_unit_path_rules`：按编译单元源码路径过滤的 gitignore 风格规则
-- `load_policy.max_expand_depth`：默认展开深度，默认 `6`
-- `load_policy.lazy_expand_children`：是否启用子节点按需展开，默认开启；当前已用于推迟深层聚合类型与数组子节点的构建
+- `load_policy.max_expand_depth`：默认展开深度，默认 `6`；`0` 表示不限制展开层深
+- `load_policy.lazy_expand_children`：是否启用子节点按需展开，默认开启；关闭后按 `max_expand_depth` 一次性构建子节点
 - `load_policy.enable_parse_metrics`：是否展示解析指标，当前会在 Inspector 面板展示粗粒度耗时与过滤计数
 
 示例：

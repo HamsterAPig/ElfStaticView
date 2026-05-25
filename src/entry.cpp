@@ -51,7 +51,8 @@ void print_usage() {
     << "  elf-static-view scan <file> [--show-runtime-only] 扫描变量概览\n"
     << "  elf-static-view dump <file> [--format text|json] [--show-runtime-only]\n"
     << "                        [--only-static-known] [--symbol <name>]\n"
-    << "                        [--expand-depth <n>] [--address-bias <value>]\n";
+    << "                        [--expand-depth <n>] [--address-bias <value>]\n"
+    << "                        --expand-depth 0 表示不限展开层深\n";
 }
 
 CliOptions parse_cli_arguments(const int argc, char** argv) {
