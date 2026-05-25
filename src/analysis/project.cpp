@@ -4,6 +4,7 @@
 #include "analysis/expander.hpp"
 #include "analysis/model_utils.hpp"
 #include "elf/dwarf_reader.hpp"
+#include "elf/raw_dwarf_reader.hpp"
 
 #include <chrono>
 #include <exception>
@@ -213,6 +214,11 @@ ProjectModel ProjectLoader::dump(const std::string& file_path, const DumpOptions
     std::chrono::duration_cast<std::chrono::milliseconds>(
       std::chrono::steady_clock::now() - expand_started_at).count());
   return model;
+}
+
+std::string ProjectLoader::dump_raw_dwarf_json(const std::string& file_path) const {
+  elf::RawDwarfReader reader;
+  return render_raw_dwarf_json(reader.load(file_path));
 }
 
 std::string render_scan_text(const ProjectModel& model) {

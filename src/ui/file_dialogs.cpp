@@ -83,4 +83,24 @@ std::optional<std::string> save_snapshot_file_dialog(const std::string& suggeste
 #endif
 }
 
+std::optional<std::string> save_raw_dwarf_file_dialog(const std::string& suggested_name) {
+#if defined(_WIN32)
+  auto path = run_dialog(OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST,
+                         L"导出原始 DWARF JSON",
+                         L"JSON 文件\0*.json\0所有文件\0*.*\0",
+                         L"json",
+                         true);
+  if (path.has_value()) {
+    return path;
+  }
+  if (!suggested_name.empty()) {
+    return std::nullopt;
+  }
+  return std::nullopt;
+#else
+  static_cast<void>(suggested_name);
+  return std::nullopt;
+#endif
+}
+
 }  // namespace elf_static_view::ui

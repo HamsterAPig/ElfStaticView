@@ -37,6 +37,7 @@ private:
   void start_elf_load(const std::string& path);
   void start_snapshot_import(const std::string& path);
   void start_snapshot_export(const std::string& path);
+  void start_raw_dwarf_export(const std::string& source_path, const std::string& output_path);
   void start_json_preview_build();
   void start_version_check();
   void poll_background_tasks();

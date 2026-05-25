@@ -52,7 +52,8 @@ void print_usage() {
     << "  elf-static-view dump <file> [--format text|json] [--show-runtime-only]\n"
     << "                        [--only-static-known] [--symbol <name>]\n"
     << "                        [--expand-depth <n>] [--address-bias <value>]\n"
-    << "                        --expand-depth 0 表示不限展开层深\n";
+    << "                        --expand-depth 0 表示不限展开层深\n"
+    << "  elf-static-view dwarf-dump <file> --format json  导出原始 DWARF JSON\n";
 }
 
 CliOptions parse_cli_arguments(const int argc, char** argv) {
@@ -86,11 +87,14 @@ CliOptions parse_cli_arguments(const int argc, char** argv) {
     }
   }
 
-  if (options.command != "scan" && options.command != "dump") {
+  if (options.command != "scan" && options.command != "dump" && options.command != "dwarf-dump") {
     throw std::runtime_error("未知命令: " + options.command);
   }
   if (options.command == "scan" && options.format != "text") {
     throw std::runtime_error("scan 命令不支持 --format");
+  }
+  if (options.command == "dwarf-dump" && options.format != "json") {
+    throw std::runtime_error("dwarf-dump 第一版仅支持 --format json");
   }
   return options;
 }
@@ -100,6 +104,11 @@ int run_cli(const int argc, char** argv) {
   const std::filesystem::path executable_path = resolve_executable_path(argv);
   elf_static_view::ProjectLoader loader;
   elf_static_view::LoadPolicy load_policy = elf_static_view::ui::load_cli_load_policy(executable_path);
+
+  if (options.command == "dwarf-dump") {
+    std::cout << loader.dump_raw_dwarf_json(options.file);
+    return 0;
+  }
 
   // CLI 显式参数优先；未显式传入时沿用配置文件默认值。
   if (options.expand_depth_specified) {
@@ -178,7 +187,7 @@ int elf_static_view_entry(const int argc, char** argv) {
     if (command == "ui") {
       return run_ui(argc, argv);
     }
-    if (command == "scan" || command == "dump") {
+    if (command == "scan" || command == "dump" || command == "dwarf-dump") {
       return run_cli(argc, argv);
     }
     throw std::runtime_error("未知命令: " + command);

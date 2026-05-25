@@ -14,6 +14,7 @@ public:
                                   const ScanOptions& options = {}) const;
   [[nodiscard]] ProjectModel dump(const std::string& file_path,
                                   const DumpOptions& options = {}) const;
+  [[nodiscard]] std::string dump_raw_dwarf_json(const std::string& file_path) const;
 };
 
 [[nodiscard]] ProjectSummary summarize(const ProjectModel& model);
@@ -26,6 +27,7 @@ public:
     const ProjectSnapshot& snapshot,
     const SnapshotExportOptions& options = {});
 [[nodiscard]] ProjectSnapshot parse_snapshot_json(const std::string& json_text);
+[[nodiscard]] std::string render_raw_dwarf_json(const RawDwarfDocument& document);
 [[nodiscard]] std::string render_expanded_node_json(const ExpandedNode& node);
 [[nodiscard]] ProjectSnapshot build_export_snapshot(
     const ProjectSnapshot& snapshot,

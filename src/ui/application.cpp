@@ -37,6 +37,7 @@ namespace {
 
 constexpr char kTaskSnapshotImport[] = "snapshot_import";
 constexpr char kTaskSnapshotExport[] = "snapshot_export";
+constexpr char kTaskRawDwarfExport[] = "raw_dwarf_export";
 constexpr char kTaskJsonPreview[] = "json_preview";
 constexpr char kTaskVersionCheck[] = "version_check";
 
@@ -385,6 +386,23 @@ void Application::start_snapshot_export(const std::string& path) {
   request_redraw();
 }
 
+void Application::start_raw_dwarf_export(const std::string& source_path, const std::string& output_path) {
+  const std::uint64_t task_id = task_runner_.submit(
+    kTaskRawDwarfExport,
+    output_path,
+    [source_path, output_path]() -> std::pair<bool, std::string> {
+      try {
+        ProjectLoader loader;
+        write_all_text(output_path, loader.dump_raw_dwarf_json(source_path));
+        return {true, output_path};
+      } catch (const std::exception& error) {
+        return {false, error.what()};
+      }
+    });
+  begin_ui_task(state_.export_raw_dwarf_task, task_id, output_path);
+  request_redraw();
+}
+
 std::string Application::compute_json_preview_cache_key() const {
   std::string key;
   key.reserve(state_.selected_node_path.size() + state_.current_file_path.size() +
@@ -486,6 +504,13 @@ void Application::poll_background_tasks() {
     start_snapshot_export(*state_.pending_export_snapshot_path);
     state_.pending_export_snapshot_path.reset();
   }
+  if (state_.pending_export_raw_dwarf_source_path.has_value() &&
+      state_.pending_export_raw_dwarf_output_path.has_value()) {
+    start_raw_dwarf_export(*state_.pending_export_raw_dwarf_source_path,
+                           *state_.pending_export_raw_dwarf_output_path);
+    state_.pending_export_raw_dwarf_source_path.reset();
+    state_.pending_export_raw_dwarf_output_path.reset();
+  }
   if (state_.pending_version_check) {
     start_version_check();
     state_.pending_version_check = false;
@@ -518,6 +543,16 @@ void Application::poll_background_tasks() {
         log_info(state_, "已导出 JSON 快照: " + exported->success_value);
       }
     } else if (fail_ui_task(state_.export_snapshot_task, exported->id, exported->error_message)) {
+      log_error(state_, exported->error_message);
+    }
+    request_redraw();
+  }
+
+  if (const auto exported = task_runner_.poll(kTaskRawDwarfExport); exported.has_value()) {
+    if (exported->success) {
+      finish_ui_task(state_.export_raw_dwarf_task, exported->id, "已导出原始 DWARF JSON: " + exported->success_value);
+      log_info(state_, "已导出原始 DWARF JSON: " + exported->success_value);
+    } else if (fail_ui_task(state_.export_raw_dwarf_task, exported->id, exported->error_message)) {
       log_error(state_, exported->error_message);
     }
     request_redraw();
