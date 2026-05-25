@@ -81,20 +81,20 @@ try {
 
   # 当前 GCC 样本有三个 CU：
   # CU0: header 起始 0x0000, abbrev_offset = 0x0000（不变）
-  # CU1: header 起始 0x00dd, abbrev_offset 字段位于 0x00e5..0x00e8
-  #      原值 0x0071 -> 0x0072
+  # CU1: header 起始 0x00dd, abbrev_offset 字段位于 0x00e2..0x00e5
+  #      原值 0x006b -> 0x006c
   #      只受前一个 abbrev table 中 ref4 -> GNU_ref_alt 的 +1 影响
-  # CU2: header 起始 0x0105, abbrev_offset 字段位于 0x010d..0x0110
-  #      原值 0x0085 -> 0x0089
+  # CU2: header 起始 0x0105, abbrev_offset 字段位于 0x010a..0x010d
+  #      原值 0x007f -> 0x0083
   #      同时受 ref4(+1) 和第二个 table 中 strp -> GNU_strp_alt(+3) 影响
-  $debugInfo[0x00e5] = 0x72
-  $debugInfo[0x00e6] = 0x00
-  $debugInfo[0x00e7] = 0x00
-  $debugInfo[0x00e8] = 0x00
-  $debugInfo[0x010d] = 0x89
-  $debugInfo[0x010e] = 0x00
-  $debugInfo[0x010f] = 0x00
-  $debugInfo[0x0110] = 0x00
+  $debugInfo[0x00e2] = 0x6c
+  $debugInfo[0x00e3] = 0x00
+  $debugInfo[0x00e4] = 0x00
+  $debugInfo[0x00e5] = 0x00
+  $debugInfo[0x010a] = 0x83
+  $debugInfo[0x010b] = 0x00
+  $debugInfo[0x010c] = 0x00
+  $debugInfo[0x010d] = 0x00
   [System.IO.File]::WriteAllBytes($debugInfoPath, $debugInfo)
 
   $content = [System.Collections.Generic.List[byte]]::new()

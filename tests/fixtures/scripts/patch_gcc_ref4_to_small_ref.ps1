@@ -48,10 +48,11 @@ try {
     "ref2" { [byte]0x12 }
     "ref_udata" { [byte]0x15 }
   }
+  # 目标类型是 SupTarget，原始 ref4 payload 指向 0x00000074。
   [byte[]]$newPayload = switch ($Mode) {
-    "ref1" { [byte[]](0x77) }
-    "ref2" { [byte[]](0x77, 0x00) }
-    "ref_udata" { [byte[]](0x77) }
+    "ref1" { [byte[]](0x74) }
+    "ref2" { [byte[]](0x74, 0x00) }
+    "ref_udata" { [byte[]](0x74) }
   }
   $shrinkBytes = 4 - $newPayload.Length
 
@@ -72,10 +73,10 @@ try {
   $debugInfo = [System.Collections.Generic.List[byte]]::new()
   $debugInfo.AddRange([System.IO.File]::ReadAllBytes($debugInfoPath))
 
-  # 第一 CU 的 sup_value DIE 位于 0x000000a1。
+  # 第一 CU 的 sup_value DIE 位于 0x0000009e。
   # 布局：abbrev(1) + "sup_value\0"(10) + decl_file(1) + decl_line(1) + decl_column(1)
   # 然后是原始 ref4 payload 4 字节 0x77 00 00 00。
-  $typeFieldOffset = 0x000000a1 + 1 + 10 + 1 + 1 + 1
+  $typeFieldOffset = 0x0000009e + 1 + 10 + 1 + 1 + 1
   $debugInfo.RemoveRange($typeFieldOffset, 4)
   $debugInfo.InsertRange($typeFieldOffset, $newPayload)
 

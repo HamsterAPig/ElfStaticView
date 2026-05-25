@@ -4,6 +4,7 @@
 
 #include <filesystem>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -32,6 +33,9 @@ private:
   void shutdown();
   void load_startup_content();
   void load_file_into_state(const std::string& path);
+  void start_elf_load(const std::string& path);
+  void poll_background_load();
+  [[nodiscard]] DumpOptions build_dump_options() const;
   void refresh_window_title();
   void request_redraw();
   void queue_ui_scale(float x_scale, float y_scale);
@@ -49,6 +53,7 @@ private:
   float pending_ui_scale_ = 1.0F;
   bool ui_scale_dirty_ = false;
   bool needs_redraw_ = true;
+  std::uint64_t next_load_task_id_ = 1;
 };
 
 }  // namespace elf_static_view::ui

@@ -15,6 +15,7 @@ public:
     bool include_runtime_only,
     bool only_static_known,
     const std::optional<std::string>& symbol_name) const;
+  [[nodiscard]] std::vector<ExpandedNode> expand_children(const ExpandedNode& node) const;
 
 private:
   [[nodiscard]] ExpandedNode expand_variable(const VariableRecord& variable) const;

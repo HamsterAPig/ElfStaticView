@@ -21,6 +21,8 @@ struct ReleaseMetadata {
 [[nodiscard]] VersionCheckState parse_version_response_text(const std::string& response_text,
                                                             const std::string& check_uri,
                                                             const std::string& repository_url);
+[[nodiscard]] LoadPolicy default_load_policy();
+[[nodiscard]] LoadPolicy load_cli_load_policy(const std::filesystem::path& executable_path);
 void load_app_config(AppState& state, const std::filesystem::path& executable_path);
 void save_app_config(const AppState& state);
 void check_for_new_version(AppState& state);

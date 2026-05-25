@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
@@ -24,6 +25,7 @@ DieHandle take_die(std::optional<DieHandle>&& value) {
 struct ReaderContext {
   Dwarf_Debug debug = nullptr;
   std::string file_path;
+  LoadPolicy load_policy;
   std::vector<TypeNode> types;
   std::vector<VariableRecord> variables;
   std::vector<CompileUnitRecord> compile_units;
@@ -37,6 +39,8 @@ struct ReaderContext {
   std::vector<std::string> scope_stack;
   std::vector<Dwarf_Half> scope_tag_stack;
   std::string current_compile_unit_name;
+  std::string current_compile_unit_source_path;
+  std::size_t skipped_compile_unit_count = 0;
 };
 
 constexpr Dwarf_Half kDwTagTiFarType = static_cast<Dwarf_Half>(0x4080);
@@ -555,6 +559,98 @@ void manual_skip_form(const Dwarf_Half form,
   return fallback;
 }
 
+[[nodiscard]] std::string trim_copy(const std::string& value) {
+  std::size_t start = 0;
+  while (start < value.size() && std::isspace(static_cast<unsigned char>(value[start])) != 0) {
+    ++start;
+  }
+  std::size_t end = value.size();
+  while (end > start && std::isspace(static_cast<unsigned char>(value[end - 1])) != 0) {
+    --end;
+  }
+  return value.substr(start, end - start);
+}
+
+[[nodiscard]] std::string normalize_rule_path(std::string value) {
+  std::replace(value.begin(), value.end(), '\\', '/');
+  return value;
+}
+
+[[nodiscard]] bool wildcard_match_impl(const std::string& value,
+                                       const std::string& pattern,
+                                       const std::size_t value_index,
+                                       const std::size_t pattern_index) {
+  if (pattern_index == pattern.size()) {
+    return value_index == value.size();
+  }
+  if (pattern[pattern_index] == '*') {
+    const bool double_star =
+      pattern_index + 1 < pattern.size() && pattern[pattern_index + 1] == '*';
+    const std::size_t next_pattern_index = pattern_index + (double_star ? 2 : 1);
+    for (std::size_t next_value_index = value_index; next_value_index <= value.size(); ++next_value_index) {
+      if (!double_star && next_value_index > value_index && value[next_value_index - 1] == '/') {
+        break;
+      }
+      if (wildcard_match_impl(value, pattern, next_value_index, next_pattern_index)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  if (value_index >= value.size()) {
+    return false;
+  }
+  if (pattern[pattern_index] == '?') {
+    return value[value_index] != '/' &&
+           wildcard_match_impl(value, pattern, value_index + 1, pattern_index + 1);
+  }
+  if (pattern[pattern_index] != value[value_index]) {
+    return false;
+  }
+  return wildcard_match_impl(value, pattern, value_index + 1, pattern_index + 1);
+}
+
+[[nodiscard]] bool wildcard_match(const std::string& value, const std::string& pattern) {
+  const std::string normalized_value = normalize_rule_path(value);
+  const std::string normalized_pattern = normalize_rule_path(pattern);
+  if (wildcard_match_impl(normalized_value, normalized_pattern, 0, 0)) {
+    return true;
+  }
+
+  // gitignore 风格中 `**/foo.c` 既能匹配任意目录下的 foo.c，也能匹配根部的 foo.c。
+  if (normalized_pattern.starts_with("**/")) {
+    return wildcard_match_impl(normalized_value, normalized_pattern.substr(3), 0, 0);
+  }
+  return false;
+}
+
+[[nodiscard]] bool should_skip_compile_unit(const ReaderContext& context, const std::string& source_path) {
+  if (source_path.empty() || context.load_policy.compile_unit_path_rules_text.empty()) {
+    return false;
+  }
+  bool included = true;
+  bool matched_any = false;
+  std::istringstream lines(context.load_policy.compile_unit_path_rules_text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    std::string pattern = trim_copy(line);
+    if (pattern.empty() || pattern.starts_with('#')) {
+      continue;
+    }
+    bool exclude = true;
+    if (pattern.starts_with('!')) {
+      exclude = false;
+      pattern.erase(pattern.begin());
+    }
+    if (pattern.empty() || !wildcard_match(source_path, pattern)) {
+      continue;
+    }
+    matched_any = true;
+    included = !exclude;
+  }
+  return matched_any && !included;
+}
+
 [[nodiscard]] bool should_trace_unknown_type_name(const std::string& name) {
   const char* raw = std::getenv("ELF_STATIC_VIEW_TRACE_UNKNOWN_NAMES");
   if (raw == nullptr || *raw == '\0') {
@@ -623,25 +719,23 @@ void apply_symbol_addresses(const ElfSymbolTable& symbols, std::vector<VariableR
 
 void deduplicate_variables(std::vector<VariableRecord>& variables) {
   std::vector<VariableRecord> deduplicated;
+  std::unordered_map<std::string, std::size_t> index_by_key;
+  deduplicated.reserve(variables.size());
   for (auto& variable : variables) {
     const auto dedup_name = variable_identity_name(variable);
     const auto dedup_key = variable.compile_unit_name + "|" + dedup_name;
-    auto existing = std::find_if(deduplicated.begin(), deduplicated.end(), [&](const VariableRecord& item) {
-      const auto existing_name = variable_identity_name(item);
-      const auto existing_key = item.compile_unit_name + "|" + existing_name;
-      return existing_key == dedup_key;
-    });
-
-    if (existing == deduplicated.end()) {
+    const auto existing = index_by_key.find(dedup_key);
+    if (existing == index_by_key.end()) {
+      index_by_key.emplace(dedup_key, deduplicated.size());
       deduplicated.push_back(std::move(variable));
       continue;
     }
 
     const bool prefer_current =
       variable.availability == Availability::StaticAddressKnown &&
-      existing->availability != Availability::StaticAddressKnown;
+      deduplicated[existing->second].availability != Availability::StaticAddressKnown;
     if (prefer_current) {
-      *existing = std::move(variable);
+      deduplicated[existing->second] = std::move(variable);
     }
   }
   variables = std::move(deduplicated);
@@ -1052,6 +1146,14 @@ void index_class_declaration_scopes(ReaderContext& context,
 
 [[nodiscard]] std::optional<std::string> read_compilation_name(Dwarf_Debug debug, Dwarf_Die die) {
   const auto attr = attribute_of(debug, die, DW_AT_name);
+  if (!attr.has_value()) {
+    return std::nullopt;
+  }
+  return string_attr(attr->get());
+}
+
+[[nodiscard]] std::optional<std::string> read_compilation_directory(Dwarf_Debug debug, Dwarf_Die die) {
+  const auto attr = attribute_of(debug, die, DW_AT_comp_dir);
   if (!attr.has_value()) {
     return std::nullopt;
   }
@@ -1528,6 +1630,9 @@ void record_type(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag, co
 }
 
 void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag) {
+  if (tag == DW_TAG_formal_parameter && context.load_policy.exclude_formal_parameters) {
+    return;
+  }
   VariableRecord variable;
   variable.id = "var@" + std::to_string(die_offset(die).value_or(0));
   variable.name = maybe_name(die_name(die), "<anon>");
@@ -1694,6 +1799,20 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
   }
 
   const auto variable_offset = die_offset(die).value_or(0);
+  if (context.load_policy.static_storage_only &&
+      variable.variable_kind != VariableKind::Global &&
+      variable.variable_kind != VariableKind::Namespace &&
+      variable.variable_kind != VariableKind::FileStatic &&
+      variable.variable_kind != VariableKind::FunctionStatic &&
+      variable.variable_kind != VariableKind::StaticMember &&
+      variable.variable_kind != VariableKind::ThreadLocal) {
+    return;
+  }
+  if (context.load_policy.exclude_runtime_only_variables &&
+      (variable.availability == Availability::RuntimeOnly ||
+       variable.availability == Availability::OptimizedOut)) {
+    return;
+  }
   context.variable_scope_by_offset[variable_offset] = variable.scope_path;
   context.variable_static_member_by_offset[variable_offset] = is_static_member;
   context.variables.push_back(std::move(variable));
@@ -1767,11 +1886,13 @@ void walk_die_tree(ReaderContext& context, Dwarf_Die die, const bool is_info) {
 
 }  // namespace
 
-ProjectModel DwarfReader::load(const std::string& file_path) const {
+ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& load_policy) const {
+  const auto dwarf_load_started_at = std::chrono::steady_clock::now();
   DebugHandle debug(file_path);
   ReaderContext context;
   context.debug = debug.get();
   context.file_path = file_path;
+  context.load_policy = load_policy;
 
   std::size_t index = 0;
   while (true) {
@@ -1819,6 +1940,12 @@ ProjectModel DwarfReader::load(const std::string& file_path) const {
     cu.id = "cu@" + std::to_string(index);
     cu.name = maybe_name(read_compilation_name(context.debug, cu_die.get()), "<unknown>");
     cu.producer = maybe_name(read_producer(context.debug, cu_die.get()), "");
+    if (const auto comp_dir = read_compilation_directory(context.debug, cu_die.get()); comp_dir.has_value() &&
+        !comp_dir->empty() && !cu.name.empty()) {
+      cu.source_path = normalize_rule_path(*comp_dir + "/" + cu.name);
+    } else {
+      cu.source_path = normalize_rule_path(cu.name);
+    }
     if (const auto language_attr = attribute_of(context.debug, cu_die.get(), DW_AT_language);
         language_attr.has_value()) {
       cu.language = language_name(unsigned_attr(language_attr->get()));
@@ -1859,9 +1986,14 @@ ProjectModel DwarfReader::load(const std::string& file_path) const {
       }
     }
     context.current_compile_unit_name = cu.name;
-    context.compile_units.push_back(cu);
-    index_class_declaration_scopes(context, cu_die.get(), true, {}, {});
-    walk_die_tree(context, cu_die.get(), true);
+    context.current_compile_unit_source_path = cu.source_path;
+    if (!should_skip_compile_unit(context, cu.source_path)) {
+      context.compile_units.push_back(cu);
+      index_class_declaration_scopes(context, cu_die.get(), true, {}, {});
+      walk_die_tree(context, cu_die.get(), true);
+    } else {
+      ++context.skipped_compile_unit_count;
+    }
     ++index;
   }
 
@@ -1869,8 +2001,13 @@ ProjectModel DwarfReader::load(const std::string& file_path) const {
   model.file = file_path;
   model.compile_units = std::move(context.compile_units);
   model.types = std::move(context.types);
+  model.metrics.variable_count_before_filter = context.variables.size();
   model.symbols = std::move(context.variables);
+  const auto symbol_table_started_at = std::chrono::steady_clock::now();
   const auto symbol_table = ElfSymbolTable::load(file_path);
+  model.metrics.symbol_table_ms = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - symbol_table_started_at).count());
   model.elf_info = ElfFileInfo {.object_class = symbol_table.metadata().object_class,
                                 .byte_order = symbol_table.metadata().byte_order,
                                 .file_type = symbol_table.metadata().file_type,
@@ -1878,7 +2015,16 @@ ProjectModel DwarfReader::load(const std::string& file_path) const {
                                 .os_abi = symbol_table.metadata().os_abi};
   // DWARF 位置表达式不总能直接给出静态绝对地址，这里再用 ELF 符号表补一遍静态对象地址。
   apply_symbol_addresses(symbol_table, model.symbols);
+  const auto deduplicate_started_at = std::chrono::steady_clock::now();
   deduplicate_variables(model.symbols);
+  model.metrics.deduplicate_ms = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - deduplicate_started_at).count());
+  model.metrics.variable_count_after_filter = model.symbols.size();
+  model.metrics.skipped_compile_unit_count = context.skipped_compile_unit_count;
+  model.metrics.dwarf_load_ms = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - dwarf_load_started_at).count());
   prune_unresolved_abstract_locals(model.symbols);
   prune_shadowed_unresolved_reference_placeholders(model.symbols);
   return model;

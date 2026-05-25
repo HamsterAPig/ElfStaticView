@@ -1,6 +1,7 @@
 #include "ui/main_window.hpp"
 
 #include "analysis/address_bias.hpp"
+#include "analysis/expander.hpp"
 #include "elf_static_view/project.hpp"
 #include "platform/utf8.hpp"
 #include "ui/file_dialogs.hpp"
@@ -123,6 +124,15 @@ bool node_or_descendant_matches(const AppState& state, const ExpandedNode& node)
       return true;
     }
   }
+  if (node.children_lazy && state.project_model.has_value()) {
+    analysis::Expander expander(state.project_model->types, state.load_policy.expand_depth);
+    const auto lazy_children = expander.expand_children(node);
+    for (const auto& child : lazy_children) {
+      if (node_or_descendant_matches(state, child)) {
+        return true;
+      }
+    }
+  }
   return false;
 }
 
@@ -148,14 +158,15 @@ void save_app_config_or_log(AppState& state) {
 }
 
 std::optional<std::string> format_selected_address_minus_bias(const AppState& state) {
-  if (state.selected_node == nullptr) {
+  const auto* selected_node = resolve_selected_node(state);
+  if (selected_node == nullptr) {
     return std::nullopt;
   }
-  if (!state.selected_node->absolute_address.has_value()) {
+  if (!selected_node->absolute_address.has_value()) {
     return std::nullopt;
   }
 
-  const auto absolute_address = state.selected_node->absolute_address.value();
+  const auto absolute_address = selected_node->absolute_address.value();
   if (state.address_bias < 0) {
     const auto magnitude = static_cast<std::uint64_t>(-(state.address_bias + 1)) + 1U;
     if (absolute_address > std::numeric_limits<std::uint64_t>::max() - magnitude) {
@@ -173,10 +184,11 @@ std::optional<std::string> format_selected_address_minus_bias(const AppState& st
 }
 
 std::optional<std::string> format_selected_raw_address(const AppState& state) {
-  if (state.selected_node == nullptr || !state.selected_node->absolute_address.has_value()) {
+  const auto* selected_node = resolve_selected_node(state);
+  if (selected_node == nullptr || !selected_node->absolute_address.has_value()) {
     return std::nullopt;
   }
-  return format_address_for_copy(state.selected_node->absolute_address.value(), state);
+  return format_address_for_copy(selected_node->absolute_address.value(), state);
 }
 
 void copy_selected_address_minus_bias(AppState& state) {
@@ -247,19 +259,23 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
     return;
   }
 
+  std::vector<ExpandedNode> lazy_children;
+  const bool has_children = node.children_lazy || !node.children.empty();
   const auto flags = ImGuiTreeNodeFlags_SpanAvailWidth |
-                     (node.children.empty() ? ImGuiTreeNodeFlags_Leaf : 0) |
-                     ((state.selected_node == &node) ? ImGuiTreeNodeFlags_Selected : 0);
+                     (!has_children ? ImGuiTreeNodeFlags_Leaf : 0) |
+                     ((state.selected_node_path == node.path) ? ImGuiTreeNodeFlags_Selected : 0);
 
   const auto label =
     node.display_name + " [" + node.type_name + "] @ " +
     elf_static_view::format_address_summary(node, state.address_bias);
   const bool opened = ImGui::TreeNodeEx(static_cast<const void*>(&node), flags, "%s", label.c_str());
   if (ImGui::IsItemClicked()) {
-    state.selected_node = &node;
+    state.selected_node = nullptr;
+    state.selected_node_path = node.path;
   }
   if (ImGui::BeginPopupContextItem()) {
-    state.selected_node = &node;
+    state.selected_node = nullptr;
+    state.selected_node_path = node.path;
     if (ImGui::MenuItem("复制变量路径")) {
       ImGui::SetClipboardText(node.path.c_str());
     }
@@ -288,7 +304,13 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
   }
 
   if (opened) {
-    for (const auto& child : node.children) {
+    const std::vector<ExpandedNode>* children = &node.children;
+    if (node.children_lazy) {
+      analysis::Expander expander(state.project_model->types, state.load_policy.expand_depth);
+      lazy_children = expander.expand_children(node);
+      children = &lazy_children;
+    }
+    for (const auto& child : *children) {
       render_tree_node(state, child);
     }
     ImGui::TreePop();
@@ -300,25 +322,8 @@ void load_elf_from_dialog(AppState& state) {
   if (!file_path.has_value()) {
     return;
   }
-  ProjectLoader loader;
-  set_loaded_project(state,
-                     loader.dump(file_path.value(),
-                                 {.include_runtime_only = true,
-                                  .only_static_known = false,
-                                  .symbol_name = std::nullopt,
-                                  .expand_depth = 8}),
-                     LoadedContentKind::ElfProject,
-                     file_path.value());
-  log_info(state, "已打开 ELF 文件: " + file_path.value());
-  if (state.project_model.has_value()) {
-    const auto& elf_info = state.project_model->elf_info;
-    log_info(state,
-             "ELF 信息: class=" + elf_info.object_class +
-               ", endian=" + elf_info.byte_order +
-               ", type=" + elf_info.file_type +
-               ", machine=" + elf_info.machine +
-               ", osabi=" + elf_info.os_abi);
-  }
+  state.pending_open_elf_path = file_path.value();
+  log_info(state, "已选择 ELF 文件，准备开始后台分析: " + file_path.value());
 }
 
 void import_snapshot_from_dialog(AppState& state) {
@@ -355,12 +360,19 @@ void render_menu_bar(AppState& state) {
   }
 
   if (ImGui::BeginMenu("文件")) {
+    const bool loading = state.background_load.status == BackgroundLoadStatus::Loading;
+    if (loading) {
+      ImGui::BeginDisabled();
+    }
     if (ImGui::MenuItem("打开 ELF...")) {
       try {
         load_elf_from_dialog(state);
       } catch (const std::exception& error) {
         log_error(state, error.what());
       }
+    }
+    if (loading) {
+      ImGui::EndDisabled();
     }
     if (ImGui::MenuItem("导入 JSON...")) {
       try {
@@ -505,6 +517,18 @@ void render_variables_panel(AppState& state) {
   render_filters(state);
   ImGui::Separator();
 
+  if (state.background_load.status == BackgroundLoadStatus::Loading) {
+    ImGui::Text("正在后台解析: %s", state.background_load.path.c_str());
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::steady_clock::now() - state.background_load.started_at);
+    ImGui::Text("已耗时: %lld 秒", static_cast<long long>(elapsed.count()));
+    ImGui::Separator();
+  } else if (state.background_load.status == BackgroundLoadStatus::Failed &&
+             !state.background_load.error_message.empty()) {
+    ImGui::TextWrapped("最近一次加载失败: %s", state.background_load.error_message.c_str());
+    ImGui::Separator();
+  }
+
   if (!state.project_model.has_value()) {
     ImGui::TextUnformatted("拖拽 ELF 或 JSON 文件到窗口，或者使用“文件”菜单打开。");
     ImGui::End();
@@ -524,6 +548,7 @@ void render_inspector_panel(AppState& state) {
   }
   if (state.project_model.has_value()) {
     const auto& elf_info = state.project_model->elf_info;
+    const auto& metrics = state.project_model->metrics;
     ImGui::TextUnformatted("ELF 信息");
     ImGui::Separator();
     ImGui::Text("Class: %s", elf_info.object_class.c_str());
@@ -531,15 +556,30 @@ void render_inspector_panel(AppState& state) {
     ImGui::Text("Type: %s", elf_info.file_type.c_str());
     ImGui::Text("Machine: %s", elf_info.machine.c_str());
     ImGui::Text("OS ABI: %s", elf_info.os_abi.c_str());
+    if (state.load_policy.enable_parse_metrics) {
+      ImGui::Separator();
+      ImGui::TextUnformatted("解析指标");
+      ImGui::Text("DWARF 加载: %llu ms", static_cast<unsigned long long>(metrics.dwarf_load_ms));
+      ImGui::Text("符号表补址: %llu ms", static_cast<unsigned long long>(metrics.symbol_table_ms));
+      ImGui::Text("变量去重: %llu ms", static_cast<unsigned long long>(metrics.deduplicate_ms));
+      ImGui::Text("展开构树: %llu ms", static_cast<unsigned long long>(metrics.expand_ms));
+      ImGui::Text("过滤前变量: %llu",
+                  static_cast<unsigned long long>(metrics.variable_count_before_filter));
+      ImGui::Text("过滤后变量: %llu",
+                  static_cast<unsigned long long>(metrics.variable_count_after_filter));
+      ImGui::Text("跳过 CU: %llu",
+                  static_cast<unsigned long long>(metrics.skipped_compile_unit_count));
+    }
     ImGui::Separator();
   }
-  if (state.selected_node == nullptr) {
+  const auto* selected_node = resolve_selected_node(state);
+  if (selected_node == nullptr) {
     ImGui::TextUnformatted("请选择一个节点。");
     ImGui::End();
     return;
   }
 
-  const auto& node = *state.selected_node;
+  const auto& node = *selected_node;
   ImGui::Text("路径: %s", node.path.c_str());
   ImGui::Text("名称: %s", node.display_name.c_str());
   ImGui::Text("类型: %s", node.type_name.c_str());
