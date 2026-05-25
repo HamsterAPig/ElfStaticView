@@ -542,25 +542,16 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {
 }
 
 
-def normalize_script_name(script_file: str) -> str:
-    name = Path(script_file).stem
-    if name in COMMANDS:
-        return name
-    raise PatchError(f"暂未迁移脚本: {script_file}")
-
-
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Patch ELF fixtures for tests.")
-    parser.add_argument("script_file", help="原 .ps1 脚本路径，用于兼容 CMake 调用面")
+    parser.add_argument("command", choices=sorted(COMMANDS), help="要执行的 Python fixture patch 命令")
     parser.add_argument("-InputPath", "--input-path", dest="input_path", required=True)
     parser.add_argument("-OutputPath", "--output-path", dest="output_path", required=True)
     parser.add_argument("-ObjcopyPath", "--objcopy-path", dest="objcopy_path")
     parser.add_argument("-Mode", "--mode", dest="mode")
     parser.add_argument("-AltFileName", "--alt-file-name", dest="alt_file_name")
     parser.add_argument("-DebugSupBytesPath", "--debug-sup-bytes-path", dest="debug_sup_bytes_path")
-    args = parser.parse_args(argv)
-    args.command = normalize_script_name(args.script_file)
-    return args
+    return parser.parse_args(argv)
 
 
 def main(argv: list[str]) -> int:
