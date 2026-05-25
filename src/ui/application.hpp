@@ -1,9 +1,11 @@
 #pragma once
 
 #include "ui/app_state.hpp"
+#include "ui/ui_task_runner.hpp"
 
 #include <filesystem>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -32,6 +34,15 @@ private:
   void shutdown();
   void load_startup_content();
   void load_file_into_state(const std::string& path);
+  void start_elf_load(const std::string& path);
+  void start_snapshot_import(const std::string& path);
+  void start_snapshot_export(const std::string& path);
+  void start_raw_dwarf_export(const std::string& source_path, const std::string& output_path);
+  void start_json_preview_build();
+  void start_version_check();
+  void poll_background_tasks();
+  [[nodiscard]] std::string compute_json_preview_cache_key() const;
+  [[nodiscard]] DumpOptions build_dump_options() const;
   void refresh_window_title();
   void request_redraw();
   void queue_ui_scale(float x_scale, float y_scale);
@@ -49,6 +60,8 @@ private:
   float pending_ui_scale_ = 1.0F;
   bool ui_scale_dirty_ = false;
   bool needs_redraw_ = true;
+  std::uint64_t next_load_task_id_ = 1;
+  UiTaskRunner task_runner_;
 };
 
 }  // namespace elf_static_view::ui

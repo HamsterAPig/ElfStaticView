@@ -204,6 +204,38 @@ int sanitize_ui_refresh_rate(const int value) {
 
 void clear_selection(AppState& state) {
   state.selected_node = nullptr;
+  state.selected_node_path.clear();
+}
+
+namespace {
+
+const ExpandedNode* find_node_by_path(const ExpandedNode& node, const std::string& path) {
+  if (node.path == path) {
+    return &node;
+  }
+  for (const auto& child : node.children) {
+    if (const auto* resolved = find_node_by_path(child, path); resolved != nullptr) {
+      return resolved;
+    }
+  }
+  return nullptr;
+}
+
+}  // namespace
+
+const ExpandedNode* resolve_selected_node(const AppState& state) {
+  if (state.selected_node != nullptr) {
+    return state.selected_node;
+  }
+  if (state.selected_node_path.empty() || !state.project_model.has_value()) {
+    return nullptr;
+  }
+  for (const auto& node : state.project_model->expanded) {
+    if (const auto* resolved = find_node_by_path(node, state.selected_node_path); resolved != nullptr) {
+      return resolved;
+    }
+  }
+  return nullptr;
 }
 
 std::string format_address_for_copy(const std::uint64_t value, const AppState& state) {
@@ -263,6 +295,11 @@ void set_loaded_project(AppState& state,
   state.snapshot.reset();
   state.error_message.clear();
   state.window_title_dirty = true;
+  state.background_load.status = BackgroundLoadStatus::Loaded;
+  state.background_load.error_message.clear();
+  state.background_load.path = source_path;
+  state.json_preview_dirty = true;
+  state.json_preview_error.clear();
   clear_selection(state);
 }
 
@@ -274,7 +311,62 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
   state.snapshot = std::move(snapshot);
   state.error_message.clear();
   state.window_title_dirty = true;
+  state.json_preview_dirty = true;
+  state.json_preview_error.clear();
   clear_selection(state);
+}
+
+void begin_background_load(AppState& state, const std::uint64_t task_id, const std::string& path) {
+  state.background_load.status = BackgroundLoadStatus::Loading;
+  state.background_load.task_id = task_id;
+  state.background_load.path = path;
+  state.background_load.error_message.clear();
+  state.background_load.started_at = std::chrono::steady_clock::now();
+}
+
+void finish_background_load(AppState& state, const std::uint64_t task_id, ProjectModel model) {
+  if (state.background_load.task_id != task_id) {
+    return;
+  }
+  set_loaded_project(state, std::move(model), LoadedContentKind::ElfProject, state.background_load.path);
+  state.background_load.status = BackgroundLoadStatus::Loaded;
+  state.background_load.future = {};
+}
+
+void fail_background_load(AppState& state, const std::uint64_t task_id, const std::string& message) {
+  if (state.background_load.task_id != task_id) {
+    return;
+  }
+  state.background_load.status = BackgroundLoadStatus::Failed;
+  state.background_load.error_message = message;
+  state.background_load.future = {};
+  log_error(state, message);
+}
+
+void begin_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::string& detail) {
+  task.status = UiTaskStatus::Running;
+  task.task_id = task_id;
+  task.detail = detail;
+  task.message.clear();
+  task.started_at = std::chrono::steady_clock::now();
+}
+
+bool finish_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::string& message) {
+  if (task.task_id != task_id) {
+    return false;
+  }
+  task.status = UiTaskStatus::Succeeded;
+  task.message = message;
+  return true;
+}
+
+bool fail_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::string& message) {
+  if (task.task_id != task_id) {
+    return false;
+  }
+  task.status = UiTaskStatus::Failed;
+  task.message = message;
+  return true;
 }
 
 std::optional<ProjectSnapshot> build_snapshot(const AppState& state) {
@@ -296,10 +388,11 @@ std::optional<ProjectSnapshot> build_snapshot(const AppState& state) {
 }
 
 std::optional<std::string> selected_node_json(const AppState& state) {
-  if (state.selected_node == nullptr) {
+  const auto* selected_node = resolve_selected_node(state);
+  if (selected_node == nullptr) {
     return std::nullopt;
   }
-  return render_expanded_node_json(*state.selected_node);
+  return render_expanded_node_json(*selected_node);
 }
 
 }  // namespace elf_static_view::ui

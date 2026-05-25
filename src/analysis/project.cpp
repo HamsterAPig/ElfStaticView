@@ -4,7 +4,9 @@
 #include "analysis/expander.hpp"
 #include "analysis/model_utils.hpp"
 #include "elf/dwarf_reader.hpp"
+#include "elf/raw_dwarf_reader.hpp"
 
+#include <chrono>
 #include <exception>
 #include <sstream>
 
@@ -17,6 +19,20 @@ namespace {
   std::ostringstream stream;
   stream << "文件分析失败: " << file_path << " | " << error.what();
   return stream.str();
+}
+
+[[nodiscard]] LoadPolicy normalize_load_policy(const ScanOptions& options) {
+  LoadPolicy policy = options.load_policy;
+  policy.exclude_runtime_only_variables = !options.include_runtime_only;
+  return policy;
+}
+
+[[nodiscard]] LoadPolicy normalize_load_policy(const DumpOptions& options) {
+  LoadPolicy policy = options.load_policy;
+  policy.exclude_runtime_only_variables = !options.include_runtime_only;
+  policy.static_storage_only = options.only_static_known;
+  policy.expand_depth = options.expand_depth;
+  return policy;
 }
 
 void append_elf_info_lines(std::ostringstream& stream, const ProjectModel& model) {
@@ -159,31 +175,50 @@ std::string to_string(VariableKind value) {
 
 ProjectModel ProjectLoader::scan(const std::string& file_path, const ScanOptions& options) const {
   elf::DwarfReader reader;
+  const LoadPolicy load_policy = normalize_load_policy(options);
   ProjectModel model;
   try {
-    model = reader.load(file_path);
+    model = reader.load(file_path, load_policy);
   } catch (const std::exception& error) {
     throw std::runtime_error(build_load_error_message(file_path, error));
   }
-  analysis::Expander expander(model.types, 6);
+  const auto expand_started_at = std::chrono::steady_clock::now();
+  analysis::Expander expander(model.types,
+                              load_policy.expand_depth,
+                              load_policy.lazy_expand_children);
   model.expanded = expander.build(model.symbols, options.include_runtime_only, false, std::nullopt);
+  model.metrics.expand_ms = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - expand_started_at).count());
   return model;
 }
 
 ProjectModel ProjectLoader::dump(const std::string& file_path, const DumpOptions& options) const {
   elf::DwarfReader reader;
+  const LoadPolicy load_policy = normalize_load_policy(options);
   ProjectModel model;
   try {
-    model = reader.load(file_path);
+    model = reader.load(file_path, load_policy);
   } catch (const std::exception& error) {
     throw std::runtime_error(build_load_error_message(file_path, error));
   }
-  analysis::Expander expander(model.types, options.expand_depth);
+  const auto expand_started_at = std::chrono::steady_clock::now();
+  analysis::Expander expander(model.types,
+                              load_policy.expand_depth,
+                              load_policy.lazy_expand_children);
   model.expanded = expander.build(model.symbols,
                                   options.include_runtime_only,
                                   options.only_static_known,
                                   options.symbol_name);
+  model.metrics.expand_ms = static_cast<std::uint64_t>(
+    std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - expand_started_at).count());
   return model;
+}
+
+std::string ProjectLoader::dump_raw_dwarf_json(const std::string& file_path) const {
+  elf::RawDwarfReader reader;
+  return render_raw_dwarf_json(reader.load(file_path));
 }
 
 std::string render_scan_text(const ProjectModel& model) {

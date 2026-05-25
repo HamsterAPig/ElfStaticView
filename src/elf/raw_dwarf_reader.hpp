@@ -6,10 +6,9 @@
 
 namespace elf_static_view::elf {
 
-class DwarfReader {
+class RawDwarfReader {
 public:
-  [[nodiscard]] ProjectModel load(const std::string& file_path,
-                                  const LoadPolicy& load_policy = {}) const;
+  [[nodiscard]] RawDwarfDocument load(const std::string& file_path) const;
 };
 
 }  // namespace elf_static_view::elf
