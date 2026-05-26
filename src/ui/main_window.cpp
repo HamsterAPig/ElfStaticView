@@ -112,29 +112,6 @@ void setup_default_dock_layout(ImGuiID dockspace_id,
   ImGui::DockBuilderFinish(dockspace_id);
 }
 
-bool node_or_descendant_matches(const AppState& state, const ExpandedNode& node) {
-  if (matches_filters(state, node)) {
-    return true;
-  }
-  for (const auto& child : node.children) {
-    if (node_or_descendant_matches(state, child)) {
-      return true;
-    }
-  }
-  if (node.children_lazy && state.project_model.has_value()) {
-    analysis::Expander expander(state.project_model->types,
-                                state.load_policy.expand_depth,
-                                state.load_policy.lazy_expand_children);
-    const auto lazy_children = expander.expand_children(node);
-    for (const auto& child : lazy_children) {
-      if (node_or_descendant_matches(state, child)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
 std::string build_log_panel_text(const AppState& state) {
   std::string text;
   for (const auto& line : state.log_messages) {
@@ -236,7 +213,7 @@ void handle_global_shortcuts(AppState& state) {
 }
 
 void render_tree_node(AppState& state, const ExpandedNode& node) {
-  if (!node_or_descendant_matches(state, node)) {
+  if (!is_filter_cache_visible(state, node)) {
     return;
   }
 
@@ -594,6 +571,7 @@ void render_variables_panel(AppState& state) {
     return;
   }
 
+  rebuild_filter_cache(state);
   for (const auto& node : state.project_model->expanded) {
     render_tree_node(state, node);
   }

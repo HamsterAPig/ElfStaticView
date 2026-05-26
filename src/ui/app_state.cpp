@@ -292,6 +292,7 @@ void set_loaded_project(AppState& state,
   state.current_file_path = source_path;
   state.current_snapshot_path.clear();
   state.project_model = std::move(model);
+  state.filters.cache.valid = false;
   state.snapshot.reset();
   state.error_message.clear();
   state.window_title_dirty = true;
@@ -308,6 +309,7 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
   state.current_snapshot_path = snapshot_path;
   state.current_file_path = snapshot.source_file;
   state.project_model = snapshot.model;
+  state.filters.cache.valid = false;
   state.snapshot = std::move(snapshot);
   state.error_message.clear();
   state.window_title_dirty = true;

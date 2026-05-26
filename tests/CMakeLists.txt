@@ -615,8 +615,8 @@ target_compile_definitions(
     ELF_STATIC_VIEW_SPECIFICATION_FIXTURE_PATH="${specification_static.elf_OUTPUT}"
     ELF_STATIC_VIEW_THREAD_LOCAL_TLS_FIXTURE_PATH="${thread_local_tls.elf_OUTPUT}"
     ELF_STATIC_VIEW_MULTI_CU_FIXTURE_PATH="${multi_cu_static_vars.elf_OUTPUT}"
-    ELF_STATIC_VIEW_C_EXPECTED_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c/static_vars.expected.json"
-    ELF_STATIC_VIEW_CPP_EXPECTED_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/cpp/static_vars.expected.json"
+    ELF_STATIC_VIEW_C_EXPECTED_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/c/static_vars.expected.md"
+    ELF_STATIC_VIEW_CPP_EXPECTED_JSON="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/cpp/static_vars.expected.md"
 )
 
 add_test(NAME elf_static_view_tests COMMAND elf_static_view_tests)

@@ -2075,6 +2075,70 @@ void verify_filter_rules() {
   expect_true(elf_static_view::ui::matches_filters(state, shared_node), "shared 节点应命中过滤规则");
   expect_true(!elf_static_view::ui::matches_filters(state, counter_node), "counter 节点应被排除规则过滤");
   expect_true(!elf_static_view::ui::matches_filters(state, holder_node), "Holder 节点应被路径规则过滤");
+
+  elf_static_view::ui::AppState cache_state;
+  cache_state.project_model = elf_static_view::ProjectModel {};
+  auto parent_node = make_node("demo::holder",
+                               "holder",
+                               "Holder",
+                               elf_static_view::Availability::StaticAddressKnown,
+                               0x2000,
+                               std::nullopt);
+  parent_node.children.push_back(make_node("demo::holder.shared_value",
+                                           "shared_value",
+                                           "int",
+                                           elf_static_view::Availability::StaticAddressKnown,
+                                           0x2004,
+                                           4));
+  parent_node.children.push_back(make_node("demo::holder.runtime_value",
+                                           "runtime_value",
+                                           "int",
+                                           elf_static_view::Availability::RuntimeOnly,
+                                           std::nullopt,
+                                           std::nullopt));
+  cache_state.project_model->expanded.push_back(parent_node);
+
+  elf_static_view::ui::compile_filter_rules(cache_state.filters);
+  elf_static_view::ui::rebuild_filter_cache(cache_state);
+  const auto empty_filter_rebuilds = cache_state.filters.cache.rebuild_count;
+  expect_true(elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node),
+              "空筛选应保留根节点");
+  expect_true(elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node.children[0]),
+              "空筛选应保留静态子节点");
+  expect_true(!elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node.children[1]),
+              "默认筛选应隐藏仅运行时子节点");
+  elf_static_view::ui::rebuild_filter_cache(cache_state);
+  expect_true(cache_state.filters.cache.rebuild_count == empty_filter_rebuilds,
+              "重复渲染查询不应重建筛选缓存");
+
+  cache_state.filters.form.variable_name_query = "shared";
+  elf_static_view::ui::compile_filter_rules(cache_state.filters);
+  elf_static_view::ui::rebuild_filter_cache(cache_state);
+  const auto name_filter_rebuilds = cache_state.filters.cache.rebuild_count;
+  expect_true(name_filter_rebuilds == empty_filter_rebuilds + 1,
+              "名称筛选变化后应失效并重建缓存");
+  expect_true(elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node),
+              "名称命中子节点时应保留祖先节点");
+  expect_true(elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node.children[0]),
+              "名称搜索应命中 display_name");
+  expect_true(!elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node.children[1]),
+              "名称搜索不应保留未命中节点");
+
+  cache_state.filters.form.variable_name_query = "holder.shared";
+  elf_static_view::ui::compile_filter_rules(cache_state.filters);
+  elf_static_view::ui::rebuild_filter_cache(cache_state);
+  expect_true(elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node.children[0]),
+              "名称搜索应命中完整路径");
+
+  cache_state.filters.form.variable_name_query.clear();
+  cache_state.filters.form.path_rules_text = "demo::holder.*\n!demo::holder.runtime*";
+  cache_state.filters.form.include_runtime_only = true;
+  elf_static_view::ui::compile_filter_rules(cache_state.filters);
+  elf_static_view::ui::rebuild_filter_cache(cache_state);
+  expect_true(elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node.children[0]),
+              "include 路径规则应保留匹配节点");
+  expect_true(!elf_static_view::ui::is_filter_cache_visible(cache_state, parent_node.children[1]),
+              "exclude 路径规则应优先排除匹配节点");
 }
 
 void verify_address_bias() {
