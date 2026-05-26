@@ -1,6 +1,7 @@
 #include "elf/dwarf_wrappers.hpp"
 
 #include "elf/elf_symbol_table.hpp"
+#include "elf/ti_coff_object.hpp"
 
 #include <cstdlib>
 #include <cstring>
@@ -168,6 +169,12 @@ DwarfError::DwarfError(const std::string& message) : std::runtime_error(message)
 Dwarf_Debug DebugHandle::open_debug(const std::string& file_path,
                                     const unsigned int group_number,
                                     const char* prefix) {
+  if (!is_elf_file(file_path)) {
+    if (is_ti_c2000_coff_file(file_path)) {
+      throw DwarfError("TI-COFF 对象需要通过 dwarf_object_init_b 打开");
+    }
+    throw DwarfError("不支持的对象格式: 仅支持 ELF/EABI 与 TI C2000 COFF v2 executable .out");
+  }
   Dwarf_Error error = nullptr;
   char actual_path_buffer[2048] = {};
   Dwarf_Debug debug = nullptr;
@@ -281,6 +288,37 @@ void DebugHandle::tie_debug_handles(Dwarf_Debug primary_debug,
 }
 
 DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
+  if (!is_elf_file(file_path)) {
+    if (!is_ti_c2000_coff_file(file_path)) {
+      throw DwarfError("不支持的对象格式: 仅支持 ELF/EABI 与 TI C2000 COFF v2 executable .out");
+    }
+
+    // TI-COFF 不走 libdwarf 内置 dwarf_init_path 探测；这里用自研 section reader
+    // 组装 object access，让后续 CU/DIE/变量解析继续复用同一套 Dwarf_Debug。
+    ti_coff_object_ = std::make_unique<TiCoffObject>(file_path);
+    const auto missing_sections = ti_coff_object_->missing_required_debug_sections();
+    if (!missing_sections.empty()) {
+      std::ostringstream message;
+      message << "TI-COFF 缺少必要 DWARF section";
+      for (const auto& name : missing_sections) {
+        message << ' ' << name;
+      }
+      throw DwarfError(message.str());
+    }
+
+    auto access = make_ti_coff_dwarf_access(*ti_coff_object_);
+    Dwarf_Error error = nullptr;
+    const int result =
+      dwarf_object_init_b(&access, nullptr, nullptr, DW_GROUPNUMBER_ANY, &debug_, &error);
+    if (result != DW_DLV_OK) {
+      const auto message = build_error_message("dwarf_object_init_b(TI-COFF) failed", error);
+      destroy_error(error);
+      throw DwarfError(message);
+    }
+    backend_ = Backend::TiCoff;
+    return;
+  }
+
   // 当前已覆盖三类自动接线：
   // 1. split DWARF skeleton + sidecar .dwo
   // 2. 主对象里的 .debug_sup -> 同目录 supplementary object
@@ -342,7 +380,11 @@ DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
 
 DebugHandle::~DebugHandle() {
   if (debug_ != nullptr) {
-    dwarf_finish(debug_);
+    if (backend_ == Backend::TiCoff) {
+      dwarf_object_finish(debug_);
+    } else {
+      dwarf_finish(debug_);
+    }
   }
   if (tied_debug_ != nullptr) {
     dwarf_finish(tied_debug_);
