@@ -282,6 +282,8 @@ std::string describe_machine(const std::uint16_t machine) {
       return "ARM";
     case 62:
       return "x86_64";
+    case 141:
+      return "TI TMS320C2000";
     case 183:
       return "AArch64";
     case 243:
