@@ -7,6 +7,7 @@
 #include <cctype>
 #include <sstream>
 #include <string_view>
+#include <utility>
 
 namespace elf_static_view::ui {
 
@@ -171,6 +172,30 @@ void collect_visible_paths(AppState& state,
   }
 }
 
+void collect_visible_paths(FilterState& filter_state,
+                           FilterCache& cache,
+                           const ExpandedNode& node,
+                           const analysis::Expander* expander) {
+  if (matches_name_query(filter_state, node) && matches_path_rules(filter_state, node) &&
+      (!filter_state.form.only_static_known || node.availability == Availability::StaticAddressKnown) &&
+      (filter_state.form.include_runtime_only ||
+       (node.availability != Availability::RuntimeOnly && node.availability != Availability::OptimizedOut))) {
+    remember_visible_path_and_ancestors(cache, node.path);
+  }
+
+  for (const auto& child : node.children) {
+    collect_visible_paths(filter_state, cache, child, expander);
+  }
+
+  if (node.children_lazy && expander != nullptr) {
+    // 后台筛选任务按需展开懒加载节点，主线程只接收最终可见路径集合。
+    const auto lazy_children = expander->expand_children(node);
+    for (const auto& child : lazy_children) {
+      collect_visible_paths(filter_state, cache, child, expander);
+    }
+  }
+}
+
 }  // namespace
 
 void compile_filter_rules(FilterState& state) {
@@ -201,6 +226,82 @@ void compile_filter_rules(FilterState& state) {
     rule.lowered_pattern = to_lower_copy(rule.normalized_pattern);
     state.rules.push_back(std::move(rule));
   }
+}
+
+FilterBuildResult build_filter_cache(const ProjectModel* model,
+                                     const FilterRuleSet& rules,
+                                     const std::size_t expand_depth,
+                                     const bool lazy_expand_children) {
+  FilterBuildResult result;
+  result.cache.signature = rules;
+  result.cache.model = model;
+  result.cache.expand_depth = expand_depth;
+  result.cache.lazy_expand_children = lazy_expand_children;
+  result.cache.valid = true;
+  ++result.cache.rebuild_count;
+
+  FilterState filter_state;
+  filter_state.form = rules;
+  compile_filter_rules(filter_state);
+  result.lowered_name_query = filter_state.lowered_name_query;
+  result.rules = filter_state.rules;
+  result.compile_error = filter_state.compile_error;
+  if (model == nullptr || result.compile_error.has_value()) {
+    return result;
+  }
+
+  analysis::Expander expander(model->types, expand_depth, lazy_expand_children);
+  for (const auto& node : model->expanded) {
+    collect_visible_paths(filter_state, result.cache, node, &expander);
+  }
+  return result;
+}
+
+void apply_filter_build_result(AppState& state, FilterBuildResult result) {
+  const std::size_t previous_rebuild_count = state.filters.cache.rebuild_count;
+  state.filters.lowered_name_query = std::move(result.lowered_name_query);
+  state.filters.rules = std::move(result.rules);
+  state.filters.compile_error = std::move(result.compile_error);
+  state.filters.cache = std::move(result.cache);
+  state.filters.cache.model = state.project_model.has_value() ? &state.project_model.value() : nullptr;
+  state.filters.cache.rebuild_count = previous_rebuild_count + 1;
+  state.filters.applied_form = state.filters.cache.signature;
+  state.filters.building = false;
+  state.filters.build_error.reset();
+}
+
+bool receive_filter_build_result(AppState& state,
+                                 const std::uint64_t task_id,
+                                 FilterBuildResult result) {
+  if (task_id != state.filters.active_task_id || state.filters.has_pending_form) {
+    return false;
+  }
+  apply_filter_build_result(state, std::move(result));
+  return true;
+}
+
+void mark_filter_text_changed(AppState& state, const std::chrono::steady_clock::time_point now) {
+  state.filters.has_pending_form = true;
+  state.filters.last_input_at = now;
+  state.filters.build_error.reset();
+}
+
+void mark_filter_options_changed(AppState& state, const std::chrono::steady_clock::time_point now) {
+  state.filters.has_pending_form = true;
+  state.filters.last_input_at = now - std::chrono::milliseconds(state.filter_debounce_ms);
+  state.filters.build_error.reset();
+}
+
+bool filter_debounce_elapsed(const AppState& state, const std::chrono::steady_clock::time_point now) {
+  if (!state.filters.has_pending_form) {
+    return false;
+  }
+  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - state.filters.last_input_at);
+  return elapsed.count() >= state.filter_debounce_ms;
+}
+
+bool should_show_filter_progress(const AppState& state) {
+  return state.filters.building || state.filters.has_pending_form || !state.filters.cache.valid;
 }
 
 bool matches_filters(const AppState& state, const ExpandedNode& node) {

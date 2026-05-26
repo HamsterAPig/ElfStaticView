@@ -19,6 +19,9 @@ namespace {
 constexpr int kDefaultUiRefreshRate = 30;
 constexpr int kMinUiRefreshRate = 1;
 constexpr int kMaxUiRefreshRate = 240;
+constexpr int kDefaultFilterDebounceMs = 300;
+constexpr int kMinFilterDebounceMs = 0;
+constexpr int kMaxFilterDebounceMs = 2000;
 
 std::string infer_source_file(const AppState& state) {
   if (!state.current_file_path.empty()) {
@@ -202,6 +205,13 @@ int sanitize_ui_refresh_rate(const int value) {
   return std::clamp(value, kMinUiRefreshRate, kMaxUiRefreshRate);
 }
 
+int sanitize_filter_debounce_ms(const int value) {
+  if (value < kMinFilterDebounceMs || value > kMaxFilterDebounceMs) {
+    return kDefaultFilterDebounceMs;
+  }
+  return value;
+}
+
 void clear_selection(AppState& state) {
   state.selected_node = nullptr;
   state.selected_node_path.clear();
@@ -293,6 +303,9 @@ void set_loaded_project(AppState& state,
   state.current_snapshot_path.clear();
   state.project_model = std::move(model);
   state.filters.cache.valid = false;
+  state.filters.has_pending_form = true;
+  state.filters.last_input_at = std::chrono::steady_clock::now() -
+                                std::chrono::milliseconds(state.filter_debounce_ms);
   state.snapshot.reset();
   state.error_message.clear();
   state.window_title_dirty = true;
@@ -310,6 +323,9 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
   state.current_file_path = snapshot.source_file;
   state.project_model = snapshot.model;
   state.filters.cache.valid = false;
+  state.filters.has_pending_form = true;
+  state.filters.last_input_at = std::chrono::steady_clock::now() -
+                                std::chrono::milliseconds(state.filter_debounce_ms);
   state.snapshot = std::move(snapshot);
   state.error_message.clear();
   state.window_title_dirty = true;

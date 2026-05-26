@@ -451,7 +451,7 @@ void render_filters(AppState& state) {
   if (ImGui::InputTextWithHint(kVariableSearchInputId,
                                "匹配变量名或完整路径中的子串",
                                &state.filters.form.variable_name_query)) {
-    compile_filter_rules(state.filters);
+    mark_filter_text_changed(state, std::chrono::steady_clock::now());
   }
 
   ImGui::TextUnformatted("路径规则");
@@ -461,14 +461,14 @@ void render_filters(AppState& state) {
   if (ImGui::InputTextMultiline("##path_rules_text",
                                 &state.filters.form.path_rules_text,
                                 ImVec2(ImGui::GetContentRegionAvail().x, 90.0F))) {
-    compile_filter_rules(state.filters);
+    mark_filter_text_changed(state, std::chrono::steady_clock::now());
   }
   if (ImGui::Checkbox("包含仅运行时可用项", &state.filters.form.include_runtime_only)) {
-    compile_filter_rules(state.filters);
+    mark_filter_options_changed(state, std::chrono::steady_clock::now());
   }
   ImGui::SameLine();
   if (ImGui::Checkbox("仅静态地址可知", &state.filters.form.only_static_known)) {
-    compile_filter_rules(state.filters);
+    mark_filter_options_changed(state, std::chrono::steady_clock::now());
   }
   if (ImGui::InputText("地址偏移", &state.address_bias_input)) {
     try {
@@ -571,7 +571,16 @@ void render_variables_panel(AppState& state) {
     return;
   }
 
-  rebuild_filter_cache(state);
+  if (should_show_filter_progress(state)) {
+    ImGui::TextUnformatted("筛选中...");
+    ImGui::End();
+    return;
+  }
+  if (state.filters.build_error.has_value()) {
+    ImGui::TextWrapped("筛选失败: %s", state.filters.build_error->c_str());
+    ImGui::End();
+    return;
+  }
   for (const auto& node : state.project_model->expanded) {
     render_tree_node(state, node);
   }

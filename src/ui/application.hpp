@@ -40,6 +40,7 @@ private:
   void start_raw_dwarf_export(const std::string& source_path, const std::string& output_path);
   void start_json_preview_build();
   void start_version_check();
+  void start_filter_build();
   void poll_background_tasks();
   [[nodiscard]] std::string compute_json_preview_cache_key() const;
   [[nodiscard]] DumpOptions build_dump_options() const;
@@ -61,6 +62,7 @@ private:
   bool ui_scale_dirty_ = false;
   bool needs_redraw_ = true;
   std::uint64_t next_load_task_id_ = 1;
+  std::uint64_t next_filter_task_id_ = 1;
   UiTaskRunner task_runner_;
 };
 
