@@ -2948,6 +2948,30 @@ void verify_data_member_location_plus_uconst_fixture() {
               "DW_OP_plus_uconst 成员偏移应参与展开地址计算");
 }
 
+void verify_first_member_without_location_uses_base_address() {
+  elf_static_view::ProjectLoader loader;
+  elf_static_view::LoadPolicy policy = elf_static_view::ui::default_load_policy();
+  policy.expand_depth = 2;
+  policy.lazy_expand_children = false;
+  const auto model = loader.dump(ELF_STATIC_VIEW_CLASS_ARRAY_FIRST_MEMBER_MISSING_FIXTURE_PATH,
+                                 {.include_runtime_only = true,
+                                  .only_static_known = false,
+                                  .symbol_name = std::nullopt,
+                                  .expand_depth = policy.expand_depth,
+                                  .load_policy = policy});
+
+  const auto* object = find_expanded_path(model.expanded, "demo::global_object");
+  const auto* items = find_expanded_path(model.expanded, "demo::global_object.items");
+  expect_true(object != nullptr && object->absolute_address.has_value(),
+              "首成员缺省位置 fixture 应保留对象基址");
+  expect_true(items != nullptr && items->absolute_address.has_value(),
+              "缺少 DW_AT_data_member_location 的首成员应使用对象基址");
+  expect_true(items->absolute_address.value() == object->absolute_address.value(),
+              "首成员地址应等于类对象基址");
+  expect_true(items->relative_offset.has_value() && items->relative_offset.value() == 0,
+              "首成员缺省位置应记录 relative_offset=0");
+}
+
 void verify_background_task_state_transitions() {
   elf_static_view::ui::AppState state;
   elf_static_view::ui::begin_background_load(state, 1, "first.elf");
@@ -2986,6 +3010,7 @@ int main() {
     verify_dump_accepts_load_policy(ELF_STATIC_VIEW_C_FIXTURE_PATH);
     verify_class_array_nested_expand_fixture();
     verify_data_member_location_plus_uconst_fixture();
+    verify_first_member_without_location_uses_base_address();
     verify_dump_text_contains_elf_info_any_class(ELF_STATIC_VIEW_DEBUG_SUP_FIXTURE_PATH, "ELF32", "LittleEndian");
     verify_bitfield_layout_fixture();
     verify_gnu_addr_index_fixture();
