@@ -5,12 +5,15 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace elf_static_view::elf {
+
+class TiCoffObject;
 
 class DwarfError : public std::runtime_error {
 public:
@@ -29,6 +32,11 @@ public:
   [[nodiscard]] const std::string& file_path() const noexcept;
 
 private:
+  enum class Backend {
+    Elf,
+    TiCoff,
+  };
+
   [[nodiscard]] static Dwarf_Debug open_debug(const std::string& file_path,
                                               unsigned int group_number,
                                               const char* prefix);
@@ -45,6 +53,8 @@ private:
   std::string file_path_;
   Dwarf_Debug debug_ = nullptr;
   Dwarf_Debug tied_debug_ = nullptr;
+  Backend backend_ = Backend::Elf;
+  std::unique_ptr<TiCoffObject> ti_coff_object_;
 };
 
 class DieHandle {

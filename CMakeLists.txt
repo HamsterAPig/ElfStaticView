@@ -82,6 +82,7 @@ add_library(elf_static_view_core
   src/elf/dwarf_reader.cpp
   src/elf/raw_dwarf_reader.cpp
   src/elf/dwarf_wrappers.cpp
+  src/elf/ti_coff_object.cpp
   src/logging/logger.cpp
 )
 
