@@ -2372,7 +2372,8 @@ void append_elf_header(std::vector<std::uint8_t>& bytes,
                        const FixtureClass elf_class,
                        const FixtureEndian endian,
                        const std::uint64_t section_header_offset,
-                       const std::uint16_t section_header_size) {
+                       const std::uint16_t section_header_size,
+                       const std::uint16_t machine = 0U) {
   bytes.push_back(0x7fU);
   bytes.push_back(static_cast<std::uint8_t>('E'));
   bytes.push_back(static_cast<std::uint8_t>('L'));
@@ -2384,7 +2385,7 @@ void append_elf_header(std::vector<std::uint8_t>& bytes,
   bytes.resize(16, 0U);
 
   append_u16(bytes, 1U, endian);
-  append_u16(bytes, elf_class == FixtureClass::Elf32 ? 3U : 62U, endian);
+  append_u16(bytes, machine != 0U ? machine : (elf_class == FixtureClass::Elf32 ? 3U : 62U), endian);
   append_u32(bytes, 1U, endian);
   if (elf_class == FixtureClass::Elf32) {
     append_u32(bytes, 0U, endian);
@@ -2464,8 +2465,8 @@ void append_symbol(std::vector<std::uint8_t>& bytes,
 }
 
 std::vector<std::uint8_t> build_symbol_table_fixture(const FixtureClass elf_class,
-                                                     const FixtureEndian endian,
-                                                     const std::uint64_t symbol_value) {
+                                                      const FixtureEndian endian,
+                                                      const std::uint64_t symbol_value) {
   const std::size_t header_size = elf_class == FixtureClass::Elf32 ? 52U : 64U;
   const std::size_t symbol_entry_size = elf_class == FixtureClass::Elf32 ? 16U : 24U;
   const std::size_t section_header_size = elf_class == FixtureClass::Elf32 ? 40U : 64U;
@@ -2509,6 +2510,26 @@ std::vector<std::uint8_t> build_symbol_table_fixture(const FixtureClass elf_clas
                         static_cast<std::uint64_t>(string_table.size()),
                         0U,
                         0U);
+  return bytes;
+}
+
+std::vector<std::uint8_t> build_metadata_fixture(const FixtureClass elf_class,
+                                                 const FixtureEndian endian,
+                                                 const std::uint16_t machine) {
+  const std::size_t header_size = elf_class == FixtureClass::Elf32 ? 52U : 64U;
+  const std::size_t section_header_size = elf_class == FixtureClass::Elf32 ? 40U : 64U;
+
+  std::vector<std::uint8_t> bytes;
+  append_elf_header(bytes,
+                    elf_class,
+                    endian,
+                    static_cast<std::uint64_t>(header_size),
+                    static_cast<std::uint16_t>(section_header_size),
+                    machine);
+  write_padding(bytes, header_size);
+  append_section_header(bytes, elf_class, endian, 0U, 0U, 0U, 0U, 0U);
+  append_section_header(bytes, elf_class, endian, 0U, 0U, 0U, 0U, 0U);
+  append_section_header(bytes, elf_class, endian, 0U, 0U, 0U, 0U, 0U);
   return bytes;
 }
 
@@ -2574,6 +2595,30 @@ void verify_elf_symbol_table_metadata() {
     expect_true(metadata.object_class == "ELF64", "应识别 ELF64");
     expect_true(metadata.byte_order == "BigEndian", "应识别大端");
     expect_true(metadata.file_type == "REL", "应识别 REL 类型");
+  } catch (...) {
+    std::filesystem::remove(path, remove_error);
+    throw;
+  }
+  std::filesystem::remove(path, remove_error);
+}
+
+void verify_c2000_elf_metadata() {
+  const auto bytes = build_metadata_fixture(FixtureClass::Elf32, FixtureEndian::Little, 141U);
+  const auto path = std::filesystem::temp_directory_path() / "elf_static_view_c2000_metadata.bin";
+  {
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+      throw std::runtime_error("无法写入 C2000 ELF metadata fixture: " + path.string());
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  }
+
+  std::error_code remove_error;
+  try {
+    const auto metadata = elf_static_view::elf::ElfSymbolTable::inspect_file(path.string());
+    expect_true(metadata.object_class == "ELF32", "C2000 fixture 应识别 ELF32");
+    expect_true(metadata.byte_order == "LittleEndian", "C2000 fixture 应按 EI_DATA 保持小端");
+    expect_true(metadata.machine == "TI TMS320C2000", "C2000 fixture 应识别 e_machine 141");
   } catch (...) {
     std::filesystem::remove(path, remove_error);
     throw;
@@ -2869,6 +2914,40 @@ void verify_class_array_nested_expand_fixture() {
   }
 }
 
+void verify_data_member_location_plus_uconst_fixture() {
+  elf_static_view::ProjectLoader loader;
+  elf_static_view::LoadPolicy policy = elf_static_view::ui::default_load_policy();
+  policy.expand_depth = 0;
+  policy.lazy_expand_children = false;
+  const auto model = loader.dump(ELF_STATIC_VIEW_CLASS_ARRAY_MEMBER_PLUS_UCONST_FIXTURE_PATH,
+                                 {.include_runtime_only = true,
+                                  .only_static_known = false,
+                                  .symbol_name = std::nullopt,
+                                  .expand_depth = policy.expand_depth,
+                                  .load_policy = policy});
+
+  const auto* nested_leaf = find_type_by_name(model, "NestedLeaf");
+  expect_true(nested_leaf != nullptr, "plus_uconst fixture 应保留 NestedLeaf 类型");
+  const auto guard_member = std::find_if(nested_leaf->members.begin(),
+                                         nested_leaf->members.end(),
+                                         [](const elf_static_view::TypeMember& member) {
+                                           return member.name == "guard";
+                                         });
+  expect_true(guard_member != nested_leaf->members.end(), "plus_uconst fixture 应包含 guard 成员");
+  expect_true(guard_member->address.relative_offset.has_value() &&
+                guard_member->address.relative_offset.value() == 4,
+              "DW_OP_plus_uconst 成员位置表达式应解析为 relative_offset=4");
+
+  const auto* nested = find_expanded_path(model.expanded, "demo::global_object.items[0].nested");
+  const auto* guard = find_expanded_path(model.expanded, "demo::global_object.items[0].nested.guard");
+  expect_true(nested != nullptr && nested->absolute_address.has_value(),
+              "plus_uconst fixture 应能展开 nested 成员地址");
+  expect_true(guard != nullptr && guard->absolute_address.has_value(),
+              "plus_uconst fixture 应能展开 guard 成员地址");
+  expect_true(guard->absolute_address.value() == nested->absolute_address.value() + 4U,
+              "DW_OP_plus_uconst 成员偏移应参与展开地址计算");
+}
+
 void verify_background_task_state_transitions() {
   elf_static_view::ui::AppState state;
   elf_static_view::ui::begin_background_load(state, 1, "first.elf");
@@ -2906,6 +2985,7 @@ int main() {
     verify_raw_dwarf_json_export(ELF_STATIC_VIEW_C_FIXTURE_PATH);
     verify_dump_accepts_load_policy(ELF_STATIC_VIEW_C_FIXTURE_PATH);
     verify_class_array_nested_expand_fixture();
+    verify_data_member_location_plus_uconst_fixture();
     verify_dump_text_contains_elf_info_any_class(ELF_STATIC_VIEW_DEBUG_SUP_FIXTURE_PATH, "ELF32", "LittleEndian");
     verify_bitfield_layout_fixture();
     verify_gnu_addr_index_fixture();
@@ -2979,6 +3059,7 @@ int main() {
     verify_utf8_path_helpers();
     verify_elf_symbol_table_endian_matrix();
     verify_elf_symbol_table_metadata();
+    verify_c2000_elf_metadata();
     verify_snapshot_export_redaction();
     verify_ui_config_round_trip();
     verify_version_check_resolution();

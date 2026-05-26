@@ -10,6 +10,7 @@
 #include <cstring>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -972,6 +973,31 @@ void index_class_declaration_scopes(ReaderContext& context,
   return stream.str();
 }
 
+[[nodiscard]] std::optional<std::int64_t> data_member_location_offset(Dwarf_Attribute attr) {
+  if (const auto offset_value = unsigned_attr(attr); offset_value.has_value()) {
+    if (offset_value.value() <= static_cast<Dwarf_Unsigned>(std::numeric_limits<std::int64_t>::max())) {
+      return static_cast<std::int64_t>(offset_value.value());
+    }
+    return std::nullopt;
+  }
+  if (const auto signed_value = signed_attr(attr); signed_value.has_value()) {
+    return signed_value.value();
+  }
+
+  const auto location_desc = read_location_description(attr);
+  if (!location_desc.has_value() || location_desc->operations.size() != 1) {
+    return std::nullopt;
+  }
+
+  const auto& operation = location_desc->operations.front();
+  if (operation.atom != DW_OP_plus_uconst ||
+      operation.operand1 > static_cast<Dwarf_Unsigned>(std::numeric_limits<std::int64_t>::max())) {
+    return std::nullopt;
+  }
+  // C2000 等工具链会把成员偏移编码为 DW_OP_plus_uconst，这里只接受单操作数表达式，避免复杂表达式被误算。
+  return static_cast<std::int64_t>(operation.operand1);
+}
+
 [[nodiscard]] std::string language_name(const std::optional<Dwarf_Unsigned>& value) {
   if (!value.has_value()) {
     return "unknown";
@@ -1526,12 +1552,7 @@ void record_type(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag, co
         if (const auto location_attr =
               attribute_of(context.debug, current.get(), DW_AT_data_member_location);
             location_attr.has_value()) {
-          if (const auto offset_value = unsigned_attr(location_attr->get()); offset_value.has_value()) {
-            member.address.relative_offset = static_cast<std::int64_t>(offset_value.value());
-          } else if (const auto signed_value = signed_attr(location_attr->get());
-                     signed_value.has_value()) {
-            member.address.relative_offset = signed_value.value();
-          }
+          member.address.relative_offset = data_member_location_offset(location_attr->get());
         }
         if (const auto data_bit_offset_attr =
               attribute_of(context.debug, current.get(), DW_AT_data_bit_offset);

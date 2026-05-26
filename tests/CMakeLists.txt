@@ -410,6 +410,7 @@ add_patched_elf_fixture(
 )
 add_linux_elf_fixture(unspecified_type.elf fixtures/cpp/unspecified_type.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
 add_linux_elf_fixture(class_array_nested_expand.elf fixtures/cpp/class_array_nested_expand.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O0")
+add_patched_elf_fixture(class_array_member_plus_uconst.elf "${class_array_nested_expand.elf_OUTPUT}" patch_data_member_location_plus_uconst -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_linux_elf_fixture(abstract_origin_values.elf fixtures/cpp/abstract_origin_values.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-O2")
 add_linux_elf_fixture(dwarf5_loclists.elf fixtures/cpp/dwarf5_loclists.cpp "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-O2")
 add_patched_elf_fixture(dwarf5_loclists_base_default.elf "${dwarf5_loclists.elf_OUTPUT}" patch_loclists_base_default -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
@@ -549,6 +550,7 @@ add_dependencies(elf_static_view_tests dwarf5_loclists_startx_length.elf_fixture
 add_dependencies(elf_static_view_tests dwarf5_loclists_start_length.elf_fixture)
 add_dependencies(elf_static_view_tests unspecified_type.elf_fixture)
 add_dependencies(elf_static_view_tests class_array_nested_expand.elf_fixture)
+add_dependencies(elf_static_view_tests class_array_member_plus_uconst.elf_fixture)
 add_dependencies(elf_static_view_tests abstract_origin_values.elf_fixture)
 add_dependencies(elf_static_view_tests dwarf5_loclists.elf_fixture)
 add_dependencies(elf_static_view_tests specification_static.elf_fixture)
@@ -610,6 +612,7 @@ target_compile_definitions(
     ELF_STATIC_VIEW_DWARF5_LOCLISTS_BASE_ADDRESSX_FIXTURE_PATH="${dwarf5_loclists_base_addressx.elf_OUTPUT}"
     ELF_STATIC_VIEW_UNSPECIFIED_TYPE_FIXTURE_PATH="${unspecified_type.elf_OUTPUT}"
     ELF_STATIC_VIEW_CLASS_ARRAY_NESTED_EXPAND_FIXTURE_PATH="${class_array_nested_expand.elf_OUTPUT}"
+    ELF_STATIC_VIEW_CLASS_ARRAY_MEMBER_PLUS_UCONST_FIXTURE_PATH="${class_array_member_plus_uconst.elf_OUTPUT}"
     ELF_STATIC_VIEW_ABSTRACT_ORIGIN_VALUES_FIXTURE_PATH="${abstract_origin_values.elf_OUTPUT}"
     ELF_STATIC_VIEW_DWARF5_LOCLISTS_FIXTURE_PATH="${dwarf5_loclists.elf_OUTPUT}"
     ELF_STATIC_VIEW_SPECIFICATION_FIXTURE_PATH="${specification_static.elf_OUTPUT}"

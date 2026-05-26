@@ -543,6 +543,53 @@ def patch_debug_types_name_indirect(args: argparse.Namespace) -> None:
         update_sections(args.objcopy_path, args.input_path, args.output_path, {".debug_abbrev": sections[".debug_abbrev"], ".debug_types": sections[".debug_types"]}, "回写 patch 后 section 失败")
 
 
+def patch_data_member_location_plus_uconst(args: argparse.Namespace) -> None:
+    with tempfile.TemporaryDirectory(prefix="elf-static-view-member-plus-uconst-") as temp:
+        sections = dump_sections(args.objcopy_path, args.input_path, Path(temp), [".debug_abbrev", ".debug_info"])
+        abbrev = read_bytes(sections[".debug_abbrev"])
+        info = read_bytes(sections[".debug_info"])
+
+        abbrev_pattern = bytes([0x05, 0x0D, 0x00, 0x03, 0x25, 0x49, 0x13, 0x3A, 0x0B, 0x3B, 0x0B, 0x38, 0x0B, 0x00, 0x00])
+        abbrev_match = find_pattern(abbrev, abbrev_pattern)
+        if abbrev_match < 0:
+            raise PatchError("未找到 member abbrev 的 DW_AT_data_member_location + DW_FORM_data1 模式")
+        plus_uconst_abbrev = bytearray(abbrev_pattern)
+        plus_uconst_abbrev[0] = 0x0C
+        plus_uconst_abbrev[12] = 0x18
+        if not abbrev or abbrev[-1] != 0:
+            raise PatchError(".debug_abbrev 末尾不是 null abbrev")
+        abbrev = bytearray(abbrev[:-1]) + plus_uconst_abbrev + bytearray([0x00])
+
+        info_pattern = bytes([0x05, 0x0A, 0x99, 0x00, 0x00, 0x00, 0x01, 0x05, 0x04, 0x00])
+        info_match = find_pattern(info, info_pattern)
+        if info_match < 0:
+            raise PatchError("未找到 guard 成员的 data1 偏移 payload")
+        info[info_match] = 0x0C
+        insert_at = info_match + 8
+        patched_info = bytearray(info[:insert_at]) + bytearray([0x02, 0x23, 0x04]) + info[insert_at + 1 :]
+        for old_ref in (0x8D, 0x99, 0x9D):
+            old_ref_bytes = struct.pack("<I", old_ref)
+            new_ref_bytes = struct.pack("<I", old_ref + 2)
+            search_at = 0
+            while True:
+                ref_match = find_pattern(patched_info, old_ref_bytes, search_at)
+                if ref_match < 0:
+                    break
+                patched_info[ref_match : ref_match + 4] = new_ref_bytes
+                search_at = ref_match + 4
+        write_u32(patched_info, 0, read_u32(info, 0) + 2)
+
+        write_bytes(sections[".debug_abbrev"], abbrev)
+        write_bytes(sections[".debug_info"], patched_info)
+        update_sections(
+            args.objcopy_path,
+            args.input_path,
+            args.output_path,
+            {".debug_abbrev": sections[".debug_abbrev"], ".debug_info": sections[".debug_info"]},
+            "回写 DW_OP_plus_uconst member fixture 失败",
+        )
+
+
 def patch_gcc_gnu_altlink(args: argparse.Namespace) -> None:
     alt_file_name = args.alt_file_name or "gnu_alt_side.elf"
     with tempfile.TemporaryDirectory(prefix="elf-static-view-gcc-altlink-") as temp:
@@ -612,6 +659,7 @@ COMMANDS: dict[str, Callable[[argparse.Namespace], None]] = {
     "patch_gcc_strp_to_strp_sup": patch_gcc_strp_to_strp_sup,
     "patch_ref_sig8_debug_types": patch_ref_sig8_debug_types,
     "patch_debug_types_name_indirect": patch_debug_types_name_indirect,
+    "patch_data_member_location_plus_uconst": patch_data_member_location_plus_uconst,
     "patch_gcc_gnu_altlink": patch_gcc_gnu_altlink,
 }
 
