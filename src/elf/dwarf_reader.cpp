@@ -1549,10 +1549,18 @@ void record_type(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag, co
         }
         member.availability = Availability::StaticLayoutKnown;
         member.address.kind = AddressKind::MemberOffset;
+        bool declaration_only = false;
+        if (const auto declaration_attr = attribute_of(context.debug, current.get(), DW_AT_declaration);
+            declaration_attr.has_value()) {
+          declaration_only = flag_attr(declaration_attr->get()).value_or(false);
+        }
         if (const auto location_attr =
               attribute_of(context.debug, current.get(), DW_AT_data_member_location);
             location_attr.has_value()) {
           member.address.relative_offset = data_member_location_offset(location_attr->get());
+        } else if (type.members.empty() && !declaration_only) {
+          // DWARF 允许省略 0 偏移成员的位置属性；首个实例成员地址就是对象基址。
+          member.address.relative_offset = 0;
         }
         if (const auto data_bit_offset_attr =
               attribute_of(context.debug, current.get(), DW_AT_data_bit_offset);
