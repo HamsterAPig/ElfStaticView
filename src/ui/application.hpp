@@ -42,6 +42,7 @@ private:
   void start_version_check();
   void start_filter_build();
   void poll_background_tasks();
+  void poll_opened_file_recreate();
   [[nodiscard]] std::string compute_json_preview_cache_key() const;
   [[nodiscard]] DumpOptions build_dump_options() const;
   void refresh_window_title();

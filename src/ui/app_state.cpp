@@ -22,6 +22,8 @@ constexpr int kMaxUiRefreshRate = 240;
 constexpr int kDefaultFilterDebounceMs = 300;
 constexpr int kMinFilterDebounceMs = 0;
 constexpr int kMaxFilterDebounceMs = 2000;
+constexpr auto kOpenedFileCheckInterval = std::chrono::milliseconds(1000);
+constexpr auto kOpenedFileRecreateStableDelay = std::chrono::milliseconds(300);
 
 std::string infer_source_file(const AppState& state) {
   if (!state.current_file_path.empty()) {
@@ -314,6 +316,7 @@ void set_loaded_project(AppState& state,
   state.background_load.path = source_path;
   state.json_preview_dirty = true;
   state.json_preview_error.clear();
+  watch_opened_file(state, kind, source_path);
   clear_selection(state);
 }
 
@@ -331,6 +334,7 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
   state.window_title_dirty = true;
   state.json_preview_dirty = true;
   state.json_preview_error.clear();
+  watch_opened_file(state, LoadedContentKind::Snapshot, snapshot_path);
   clear_selection(state);
 }
 
@@ -359,6 +363,86 @@ void fail_background_load(AppState& state, const std::uint64_t task_id, const st
   state.background_load.error_message = message;
   state.background_load.future = {};
   log_error(state, message);
+}
+
+void watch_opened_file(AppState& state, const LoadedContentKind kind, const std::string& path) {
+  if (path.empty() || kind == LoadedContentKind::None) {
+    state.opened_file_monitor = {};
+    return;
+  }
+
+  // 成功打开后才建立监听；快照监听 JSON 本身，不监听快照内记录的 source_file。
+  state.opened_file_monitor = OpenedFileMonitorState {
+    .path = path,
+    .content_kind = kind,
+    .has_seen_existing = true,
+  };
+}
+
+bool has_opened_file_monitor(const AppState& state) {
+  return !state.opened_file_monitor.path.empty() &&
+         state.opened_file_monitor.content_kind != LoadedContentKind::None;
+}
+
+bool opened_file_monitor_check_due(AppState& state, const std::chrono::steady_clock::time_point now) {
+  if (!has_opened_file_monitor(state)) {
+    return false;
+  }
+
+  auto& monitor = state.opened_file_monitor;
+  if (monitor.last_checked_at != std::chrono::steady_clock::time_point {} &&
+      now - monitor.last_checked_at < kOpenedFileCheckInterval) {
+    return false;
+  }
+
+  monitor.last_checked_at = now;
+  return true;
+}
+
+std::optional<std::string> observe_opened_file_presence(AppState& state,
+                                                        const bool exists,
+                                                        const std::chrono::steady_clock::time_point now,
+                                                        const bool reload_busy) {
+  if (!has_opened_file_monitor(state)) {
+    return std::nullopt;
+  }
+
+  auto& monitor = state.opened_file_monitor;
+  if (!exists) {
+    // 删除期间只记录缺失状态，绝不清空旧模型或旧快照，保证界面继续展示最后一次解析结果。
+    if (monitor.has_seen_existing) {
+      monitor.missing = true;
+    }
+    monitor.reload_pending = false;
+    monitor.recreated_at = {};
+    return std::nullopt;
+  }
+
+  if (!monitor.has_seen_existing) {
+    monitor.has_seen_existing = true;
+    monitor.missing = false;
+    return std::nullopt;
+  }
+
+  if (!monitor.missing) {
+    return std::nullopt;
+  }
+
+  if (!monitor.reload_pending) {
+    monitor.reload_pending = true;
+    monitor.recreated_at = now;
+    return std::nullopt;
+  }
+
+  if (now - monitor.recreated_at < kOpenedFileRecreateStableDelay || reload_busy) {
+    return std::nullopt;
+  }
+
+  const std::string reload_path = monitor.path;
+  monitor.missing = false;
+  monitor.reload_pending = false;
+  monitor.recreated_at = {};
+  return reload_path;
 }
 
 void begin_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::string& detail) {
