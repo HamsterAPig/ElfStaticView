@@ -237,6 +237,7 @@ bool Application::initialize() {
   compile_filter_rules(state_.filters);
   try {
     load_app_config(state_, options_.executable_path);
+    compile_filter_rules(state_.filters);
   } catch (const std::exception& error) {
     log_error(state_, error.what());
   }

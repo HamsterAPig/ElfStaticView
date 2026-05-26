@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <future>
+#include <unordered_set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -29,13 +30,26 @@ struct FilterRuleSet {
 struct FilterRule {
   std::string raw_pattern;
   std::string normalized_pattern;
+  std::string lowered_pattern;
   bool exclude = false;
+};
+
+struct FilterCache {
+  FilterRuleSet signature;
+  const ProjectModel* model = nullptr;
+  std::size_t expand_depth = 0;
+  bool lazy_expand_children = true;
+  std::unordered_set<std::string> visible_paths;
+  bool valid = false;
+  std::size_t rebuild_count = 0;
 };
 
 struct FilterState {
   FilterRuleSet form;
+  std::string lowered_name_query;
   std::vector<FilterRule> rules;
   std::optional<std::string> compile_error;
+  FilterCache cache;
 };
 
 struct VersionCheckState {
