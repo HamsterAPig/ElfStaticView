@@ -2999,6 +2999,103 @@ void verify_background_task_state_transitions() {
               "原始 DWARF 导出任务完成后应进入 Succeeded");
 }
 
+void verify_opened_file_monitor_state_machine() {
+  using elf_static_view::ui::AppState;
+  using elf_static_view::ui::LoadedContentKind;
+
+  const auto base_time = std::chrono::steady_clock::now();
+
+  AppState due_state;
+  elf_static_view::ui::watch_opened_file(due_state, LoadedContentKind::ElfProject, "workspace/demo.elf");
+  expect_true(elf_static_view::ui::opened_file_monitor_check_due(due_state, base_time),
+              "已监听文件首次检查应立即允许");
+  expect_true(!elf_static_view::ui::opened_file_monitor_check_due(due_state, base_time + std::chrono::milliseconds(999)),
+              "已监听文件不应每帧访问文件系统");
+  expect_true(elf_static_view::ui::opened_file_monitor_check_due(due_state, base_time + std::chrono::milliseconds(1000)),
+              "已监听文件超过轮询间隔后应允许再次检查");
+
+  AppState project_state;
+  elf_static_view::ProjectModel project_model;
+  project_model.file = "workspace/demo.elf";
+  elf_static_view::ui::set_loaded_project(
+    project_state, std::move(project_model), LoadedContentKind::ElfProject, "workspace/demo.elf");
+
+  const auto no_delete_reload =
+    elf_static_view::ui::observe_opened_file_presence(project_state, true, base_time, false);
+  expect_true(!no_delete_reload.has_value(), "普通原地存在检查不应触发重新打开");
+
+  const auto delete_reload =
+    elf_static_view::ui::observe_opened_file_presence(project_state, false, base_time + std::chrono::milliseconds(1000), false);
+  expect_true(!delete_reload.has_value(), "仅删除已打开文件不应触发重新打开");
+  expect_true(project_state.project_model.has_value(), "删除期间应保留旧 project_model");
+  expect_true(project_state.current_file_path == "workspace/demo.elf", "删除期间应保留当前 ELF 路径");
+  expect_true(project_state.opened_file_monitor.missing, "删除后监听状态应记录暂时缺失");
+  expect_true(!project_state.opened_file_monitor.reload_pending, "重复缺失前不应排队重新打开");
+
+  const auto repeated_delete_reload =
+    elf_static_view::ui::observe_opened_file_presence(project_state, false, base_time + std::chrono::milliseconds(1500), false);
+  expect_true(!repeated_delete_reload.has_value(), "重复缺失不应重复触发重新打开");
+  expect_true(!project_state.opened_file_monitor.reload_pending, "重复缺失不应留下重载排队状态");
+
+  const auto early_recreate_reload =
+    elf_static_view::ui::observe_opened_file_presence(project_state, true, base_time + std::chrono::milliseconds(1800), false);
+  expect_true(!early_recreate_reload.has_value(), "重建后稳定等待未满足时不应立刻重新打开");
+  expect_true(project_state.opened_file_monitor.reload_pending, "重建后应记录一次待重载信号");
+
+  const auto ready_recreate_reload =
+    elf_static_view::ui::observe_opened_file_presence(project_state, true, base_time + std::chrono::milliseconds(2200), false);
+  expect_true(ready_recreate_reload.has_value() && ready_recreate_reload.value() == "workspace/demo.elf",
+              "删除后重建且稳定后应触发一次重新打开");
+  const auto duplicate_recreate_reload =
+    elf_static_view::ui::observe_opened_file_presence(project_state, true, base_time + std::chrono::milliseconds(2600), false);
+  expect_true(!duplicate_recreate_reload.has_value(), "一次重建完成后不应重复重新打开");
+}
+
+void verify_opened_file_monitor_busy_and_snapshot_paths() {
+  using elf_static_view::ui::AppState;
+  using elf_static_view::ui::LoadedContentKind;
+
+  const auto base_time = std::chrono::steady_clock::now();
+
+  AppState busy_state;
+  elf_static_view::ui::watch_opened_file(busy_state, LoadedContentKind::ElfProject, "workspace/busy.elf");
+  static_cast<void>(elf_static_view::ui::observe_opened_file_presence(
+    busy_state, false, base_time + std::chrono::milliseconds(1000), false));
+  static_cast<void>(elf_static_view::ui::observe_opened_file_presence(
+    busy_state, true, base_time + std::chrono::milliseconds(1300), true));
+
+  const auto busy_reload =
+    elf_static_view::ui::observe_opened_file_presence(busy_state, true, base_time + std::chrono::milliseconds(1700), true);
+  expect_true(!busy_reload.has_value(), "加载中遇到重建不应立即重新打开");
+  expect_true(busy_state.opened_file_monitor.reload_pending, "加载中重建只应保留一个待重载信号");
+
+  const auto still_busy_reload =
+    elf_static_view::ui::observe_opened_file_presence(busy_state, true, base_time + std::chrono::milliseconds(2100), true);
+  expect_true(!still_busy_reload.has_value(), "加载持续期间不应堆积重复重载任务");
+  expect_true(busy_state.opened_file_monitor.reload_pending, "加载持续期间应继续保留原始待重载信号");
+
+  const auto resumed_reload =
+    elf_static_view::ui::observe_opened_file_presence(busy_state, true, base_time + std::chrono::milliseconds(2500), false);
+  expect_true(resumed_reload.has_value() && resumed_reload.value() == "workspace/busy.elf",
+              "加载结束后应消费之前的重建信号并重新打开一次");
+
+  AppState snapshot_state;
+  elf_static_view::ProjectSnapshot snapshot;
+  snapshot.source_file = "workspace/source-from-snapshot.elf";
+  snapshot.model.file = snapshot.source_file;
+  elf_static_view::ui::set_loaded_snapshot(snapshot_state, std::move(snapshot), "workspace/imported.snapshot.json");
+  expect_true(snapshot_state.current_file_path == "workspace/source-from-snapshot.elf",
+              "导入快照后 current_file_path 应保留快照内源文件");
+  expect_true(snapshot_state.opened_file_monitor.path == "workspace/imported.snapshot.json",
+              "导入快照后监听路径应指向 JSON 快照本身");
+
+  const auto snapshot_delete_reload =
+    elf_static_view::ui::observe_opened_file_presence(snapshot_state, false, base_time + std::chrono::milliseconds(1000), false);
+  expect_true(!snapshot_delete_reload.has_value(), "仅删除 JSON 快照不应触发重新打开");
+  expect_true(snapshot_state.snapshot.has_value(), "删除 JSON 快照期间应保留旧 snapshot");
+  expect_true(snapshot_state.project_model.has_value(), "删除 JSON 快照期间应保留旧 project_model");
+}
+
 }  // namespace
 
 int main() {
@@ -3091,6 +3188,8 @@ int main() {
     verify_version_response_parsing();
     verify_version_compare_rules();
     verify_background_task_state_transitions();
+    verify_opened_file_monitor_state_machine();
+    verify_opened_file_monitor_busy_and_snapshot_paths();
     std::cout << "all tests passed\n";
     return EXIT_SUCCESS;
   } catch (const std::exception& error) {

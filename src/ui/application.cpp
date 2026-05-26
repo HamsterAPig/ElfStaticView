@@ -28,6 +28,7 @@
 #include <memory>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
 #include <string_view>
 #include <utility>
@@ -168,7 +169,11 @@ int Application::run() {
     poll_background_tasks();
     if (!needs_redraw_ && !ui_scale_dirty_) {
       // 空闲时阻塞等待事件；一旦收到事件，立刻补一帧把交互结果真正绘制出来。
-      glfwWaitEvents();
+      if (has_opened_file_monitor(state_)) {
+        glfwWaitEventsTimeout(1.0);
+      } else {
+        glfwWaitEvents();
+      }
       needs_redraw_ = true;
     }
 
@@ -646,6 +651,8 @@ void Application::poll_background_tasks() {
     }
     request_redraw();
   }
+
+  poll_opened_file_recreate();
 }
 
 void Application::refresh_window_title() {
@@ -671,6 +678,26 @@ void Application::queue_ui_scale(const float x_scale, const float y_scale) {
   if (ui_scale_dirty_) {
     request_redraw();
   }
+}
+
+void Application::poll_opened_file_recreate() {
+  const auto now = std::chrono::steady_clock::now();
+  if (!opened_file_monitor_check_due(state_, now)) {
+    return;
+  }
+
+  std::error_code error_code;
+  const bool exists = std::filesystem::exists(platform::utf8_path(state_.opened_file_monitor.path), error_code);
+  const bool reload_busy = state_.background_load.status == BackgroundLoadStatus::Loading ||
+                           state_.import_snapshot_task.status == UiTaskStatus::Running;
+  const auto reload_path = observe_opened_file_presence(state_, exists && !error_code, now, reload_busy);
+  if (!reload_path.has_value()) {
+    return;
+  }
+
+  log_info(state_, "检测到已打开文件被删除后重建，重新打开: " + reload_path.value());
+  load_file_into_state(reload_path.value());
+  request_redraw();
 }
 
 void Application::apply_pending_ui_scale() {

@@ -99,6 +99,16 @@ struct BackgroundLoadState {
   std::future<ProjectModel> future;
 };
 
+struct OpenedFileMonitorState {
+  std::string path;
+  LoadedContentKind content_kind = LoadedContentKind::None;
+  bool has_seen_existing = false;
+  bool missing = false;
+  bool reload_pending = false;
+  std::chrono::steady_clock::time_point last_checked_at {};
+  std::chrono::steady_clock::time_point recreated_at {};
+};
+
 enum class UiTaskStatus {
   Idle,
   Running,
@@ -156,6 +166,7 @@ struct AppState {
   bool pending_version_check = false;
   LoadPolicy load_policy;
   BackgroundLoadState background_load;
+  OpenedFileMonitorState opened_file_monitor;
   UiTaskState import_snapshot_task;
   UiTaskState export_snapshot_task;
   UiTaskState export_raw_dwarf_task;
@@ -189,6 +200,15 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
 void begin_background_load(AppState& state, std::uint64_t task_id, const std::string& path);
 void finish_background_load(AppState& state, std::uint64_t task_id, ProjectModel model);
 void fail_background_load(AppState& state, std::uint64_t task_id, const std::string& message);
+void watch_opened_file(AppState& state, LoadedContentKind kind, const std::string& path);
+[[nodiscard]] bool has_opened_file_monitor(const AppState& state);
+[[nodiscard]] bool opened_file_monitor_check_due(AppState& state,
+                                                 std::chrono::steady_clock::time_point now);
+[[nodiscard]] std::optional<std::string> observe_opened_file_presence(
+  AppState& state,
+  bool exists,
+  std::chrono::steady_clock::time_point now,
+  bool reload_busy);
 void begin_ui_task(UiTaskState& task, std::uint64_t task_id, const std::string& detail);
 bool finish_ui_task(UiTaskState& task, std::uint64_t task_id, const std::string& message);
 bool fail_ui_task(UiTaskState& task, std::uint64_t task_id, const std::string& message);
