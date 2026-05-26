@@ -444,6 +444,7 @@ LoadPolicy load_cli_load_policy(const std::filesystem::path& executable_path) {
 void load_app_config(AppState& state, const std::filesystem::path& executable_path) {
   state.config_path = config_path_for_executable(executable_path);
   state.enable_background_loading = true;
+  state.filter_debounce_ms = sanitize_filter_debounce_ms(300);
   state.load_policy = default_load_policy();
   if (!std::filesystem::exists(state.config_path)) {
     log_info(state, "未找到配置文件: " + path_to_log_text(state.config_path));
@@ -494,6 +495,21 @@ void load_app_config(AppState& state, const std::filesystem::path& executable_pa
     }
   } catch (const std::exception& error) {
     log_error(state, std::string("配置文件中的 ui.refresh_rate 无效: ") + error.what());
+  }
+  try {
+    if (const auto stored_filter_debounce = read_yaml_int(ui, "filter_debounce_ms");
+        stored_filter_debounce.has_value()) {
+      const int sanitized = sanitize_filter_debounce_ms(stored_filter_debounce.value());
+      state.filter_debounce_ms = sanitized;
+      if (sanitized == stored_filter_debounce.value()) {
+        log_info(state, "筛选输入延迟已加载: " + std::to_string(state.filter_debounce_ms) + " ms");
+      } else {
+        log_error(state, "配置文件中的 ui.filter_debounce_ms 超出范围，将回退到 300 ms。");
+      }
+    }
+  } catch (const std::exception& error) {
+    state.filter_debounce_ms = sanitize_filter_debounce_ms(300);
+    log_error(state, std::string("配置文件中的 ui.filter_debounce_ms 无效: ") + error.what());
   }
 
   const YAML::Node load_policy = root["load_policy"];
@@ -560,6 +576,7 @@ void save_app_config(const AppState& state) {
   root["copy"]["address_base"] = copy_address_base_to_config_value(state.copy_address_base);
   root["copy"]["strip_hex_prefix"] = state.copy_hex_without_prefix;
   root["ui"]["refresh_rate"] = sanitize_ui_refresh_rate(state.ui_refresh_rate);
+  root["ui"]["filter_debounce_ms"] = sanitize_filter_debounce_ms(state.filter_debounce_ms);
   root["load_policy"]["enable_background_loading"] = state.enable_background_loading;
   root["load_policy"]["default_static_storage_only"] = state.load_policy.static_storage_only;
   root["load_policy"]["exclude_formal_parameters"] = state.load_policy.exclude_formal_parameters;

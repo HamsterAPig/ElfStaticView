@@ -44,12 +44,31 @@ struct FilterCache {
   std::size_t rebuild_count = 0;
 };
 
+struct FilterBuildResult {
+  FilterCache cache;
+  std::string lowered_name_query;
+  std::vector<FilterRule> rules;
+  std::optional<std::string> compile_error;
+};
+
+struct FilterTask {
+  std::uint64_t task_id = 0;
+  std::future<FilterBuildResult> future;
+};
+
 struct FilterState {
   FilterRuleSet form;
+  FilterRuleSet applied_form;
+  bool has_pending_form = false;
+  std::chrono::steady_clock::time_point last_input_at {};
   std::string lowered_name_query;
   std::vector<FilterRule> rules;
   std::optional<std::string> compile_error;
   FilterCache cache;
+  bool building = false;
+  std::uint64_t active_task_id = 0;
+  std::vector<FilterTask> tasks;
+  std::optional<std::string> build_error;
 };
 
 struct VersionCheckState {
@@ -118,6 +137,7 @@ struct AppState {
   CopyAddressBase copy_address_base = CopyAddressBase::Hex;
   bool copy_hex_without_prefix = false;
   int ui_refresh_rate = 30;
+  int filter_debounce_ms = 300;
   bool persist_address_bias_to_config = false;
   bool window_title_dirty = false;
   bool show_log_panel = true;
@@ -156,6 +176,7 @@ void log_error(AppState& state, const std::string& message);
 [[nodiscard]] std::optional<CopyAddressBase> parse_copy_address_base(std::string_view value);
 [[nodiscard]] std::string copy_address_base_to_config_value(CopyAddressBase value);
 [[nodiscard]] int sanitize_ui_refresh_rate(int value);
+[[nodiscard]] int sanitize_filter_debounce_ms(int value);
 void clear_selection(AppState& state);
 [[nodiscard]] const ExpandedNode* resolve_selected_node(const AppState& state);
 [[nodiscard]] std::string format_address_for_copy(std::uint64_t value, const AppState& state);

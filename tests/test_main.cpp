@@ -2141,6 +2141,76 @@ void verify_filter_rules() {
               "exclude 路径规则应优先排除匹配节点");
 }
 
+void verify_filter_debounce_and_async_state() {
+  elf_static_view::ui::AppState state;
+  state.filter_debounce_ms = 300;
+  const auto start = std::chrono::steady_clock::now();
+
+  state.filters.form.variable_name_query = "sha";
+  elf_static_view::ui::mark_filter_text_changed(state, start);
+  expect_true(!elf_static_view::ui::filter_debounce_elapsed(state, start + std::chrono::milliseconds(299)),
+              "输入变化后 debounce 未到期不应启动筛选");
+  expect_true(elf_static_view::ui::filter_debounce_elapsed(state, start + std::chrono::milliseconds(300)),
+              "输入变化后 debounce 到期应允许启动筛选");
+
+  elf_static_view::ui::mark_filter_text_changed(state, start + std::chrono::milliseconds(100));
+  expect_true(!elf_static_view::ui::filter_debounce_elapsed(state, start + std::chrono::milliseconds(399)),
+              "连续输入应刷新 debounce 起点");
+  expect_true(elf_static_view::ui::filter_debounce_elapsed(state, start + std::chrono::milliseconds(400)),
+              "连续输入只应在最后一次输入到期后启动筛选");
+
+  state.filters.form.include_runtime_only = true;
+  elf_static_view::ui::mark_filter_options_changed(state, start + std::chrono::milliseconds(500));
+  expect_true(elf_static_view::ui::filter_debounce_elapsed(state, start + std::chrono::milliseconds(500)),
+              "checkbox 变化应立即触发异步筛选");
+
+  elf_static_view::ProjectModel model;
+  model.expanded.push_back(make_node("demo::old", "old", "int", elf_static_view::Availability::StaticAddressKnown, 1, 0));
+  model.expanded.push_back(make_node("demo::latest",
+                                     "latest",
+                                     "int",
+                                     elf_static_view::Availability::StaticAddressKnown,
+                                     2,
+                                     0));
+  state.project_model = model;
+  state.filters.active_task_id = 2;
+  state.filters.building = true;
+  state.filters.has_pending_form = false;
+  auto old_result = elf_static_view::ui::build_filter_cache(&state.project_model.value(),
+                                                            elf_static_view::ui::FilterRuleSet {
+                                                              .variable_name_query = "old",
+                                                              .path_rules_text = {},
+                                                              .include_runtime_only = false,
+                                                              .only_static_known = false,
+                                                            },
+                                                            0,
+                                                            true);
+  expect_true(!elf_static_view::ui::receive_filter_build_result(state, 1, std::move(old_result)),
+              "过期筛选任务结果不应覆盖最新缓存");
+  expect_true(state.filters.building, "丢弃过期结果后仍应保持最新任务筛选中状态");
+
+  auto latest_result = elf_static_view::ui::build_filter_cache(&state.project_model.value(),
+                                                               elf_static_view::ui::FilterRuleSet {
+                                                                 .variable_name_query = "latest",
+                                                                 .path_rules_text = {},
+                                                                 .include_runtime_only = false,
+                                                                 .only_static_known = false,
+                                                               },
+                                                               0,
+                                                               true);
+  expect_true(elf_static_view::ui::receive_filter_build_result(state, 2, std::move(latest_result)),
+              "最新筛选任务结果应被接收");
+  expect_true(!state.filters.building, "最新结果接收后应结束筛选中状态");
+  expect_true(state.filters.cache.visible_paths.find("demo::latest") != state.filters.cache.visible_paths.end(),
+              "最新结果应写入可见路径缓存");
+  expect_true(state.filters.cache.visible_paths.find("demo::old") == state.filters.cache.visible_paths.end(),
+              "最新结果不应保留过期筛选路径");
+
+  state.filters.cache.valid = false;
+  expect_true(elf_static_view::ui::should_show_filter_progress(state),
+              "缓存无效时变量树 UI 应显示筛选中状态");
+}
+
 void verify_address_bias() {
   const auto node = make_node("demo::global_value",
                               "global_value",
@@ -2569,6 +2639,7 @@ void verify_ui_config_round_trip() {
   first_state.copy_address_base = elf_static_view::ui::CopyAddressBase::Bin;
   first_state.copy_hex_without_prefix = true;
   first_state.ui_refresh_rate = 15;
+  first_state.filter_debounce_ms = 450;
   first_state.version_check = elf_static_view::ui::VersionCheckState {
     .repository_url = "https://example.com/project",
     .check_uri = "https://example.com/releases.yaml",
@@ -2596,6 +2667,8 @@ void verify_ui_config_round_trip() {
               "十六进制复制前缀设置应当从配置文件恢复");
   expect_true(restored_state.ui_refresh_rate == 15,
               "界面刷新率应当从配置文件恢复");
+  expect_true(restored_state.filter_debounce_ms == 450,
+              "筛选输入延迟应当从配置文件恢复");
   expect_true(restored_state.version_check.has_value(),
               "版本检查 URI 应当从配置文件恢复");
   expect_true(restored_state.version_check->repository_url == "https://example.com/project",
@@ -2621,6 +2694,17 @@ void verify_ui_config_round_trip() {
               "关闭地址偏移写回不应影响十六进制复制前缀设置");
   expect_true(disabled_state.ui_refresh_rate == 15,
               "关闭地址偏移写回不应影响界面刷新率恢复");
+  expect_true(disabled_state.filter_debounce_ms == 450,
+              "关闭地址偏移写回不应影响筛选输入延迟恢复");
+
+  {
+    std::ofstream output(first_state.config_path, std::ios::binary);
+    output << "ui:\n  filter_debounce_ms: 3001\n";
+  }
+  elf_static_view::ui::AppState invalid_debounce_state;
+  elf_static_view::ui::load_app_config(invalid_debounce_state, executable_path);
+  expect_true(invalid_debounce_state.filter_debounce_ms == 300,
+              "非法筛选输入延迟应回退默认值");
 
   std::filesystem::remove_all(temp_root);
 }
@@ -2887,6 +2971,7 @@ int main() {
     verify_dump_text_contains_elf_info(ELF_STATIC_VIEW_CPP_FIXTURE_PATH);
     verify_loader_error_contains_file_path();
     verify_filter_rules();
+    verify_filter_debounce_and_async_state();
     verify_address_bias();
     verify_address_bias_parsing();
     verify_copy_address_formatting();

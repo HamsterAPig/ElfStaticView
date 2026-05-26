@@ -25,6 +25,7 @@
 #include <fstream>
 #include <future>
 #include <functional>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
@@ -480,6 +481,36 @@ void Application::start_version_check() {
   request_redraw();
 }
 
+void Application::start_filter_build() {
+  if (!state_.filters.has_pending_form) {
+    return;
+  }
+
+  const std::uint64_t task_id = next_filter_task_id_++;
+  const FilterRuleSet rules = state_.filters.form;
+  const std::size_t expand_depth = state_.load_policy.expand_depth;
+  const bool lazy_expand_children = state_.load_policy.lazy_expand_children;
+  std::shared_ptr<const ProjectModel> model_snapshot;
+  if (state_.project_model.has_value()) {
+    model_snapshot = std::make_shared<ProjectModel>(state_.project_model.value());
+  }
+
+  state_.filters.has_pending_form = false;
+  state_.filters.applied_form = rules;
+  state_.filters.building = true;
+  state_.filters.active_task_id = task_id;
+  state_.filters.build_error.reset();
+  state_.filters.cache.valid = false;
+  state_.filters.tasks.push_back(FilterTask {
+    .task_id = task_id,
+    .future = std::async(std::launch::async,
+                         [model_snapshot, rules, expand_depth, lazy_expand_children]() {
+                           return build_filter_cache(model_snapshot.get(), rules, expand_depth, lazy_expand_children);
+                         }),
+  });
+  request_redraw();
+}
+
 void Application::poll_background_tasks() {
   if (state_.background_load.status != BackgroundLoadStatus::Loading) {
   } else if (state_.background_load.future.valid() &&
@@ -494,6 +525,32 @@ void Application::poll_background_tasks() {
     } catch (const std::exception& error) {
       fail_background_load(state_, task_id, error.what());
     }
+    request_redraw();
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (filter_debounce_elapsed(state_, now)) {
+    start_filter_build();
+  }
+  for (auto iter = state_.filters.tasks.begin(); iter != state_.filters.tasks.end();) {
+    if (!iter->future.valid() ||
+        iter->future.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) {
+      ++iter;
+      continue;
+    }
+
+    const std::uint64_t task_id = iter->task_id;
+    try {
+      auto result = iter->future.get();
+      static_cast<void>(receive_filter_build_result(state_, task_id, std::move(result)));
+    } catch (const std::exception& error) {
+      if (task_id == state_.filters.active_task_id && !state_.filters.has_pending_form) {
+        state_.filters.building = false;
+        state_.filters.build_error = error.what();
+        state_.filters.cache.valid = false;
+      }
+    }
+    iter = state_.filters.tasks.erase(iter);
     request_redraw();
   }
 
