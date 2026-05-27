@@ -134,15 +134,27 @@ constexpr std::size_t kSymbolRecordSize = 18;
                                    const Dwarf_Unsigned section_index,
                                    Dwarf_Obj_Access_Section_a* return_section,
                                    int* error) {
-  const auto* coff_object = static_cast<TiCoffObject*>(object);
-  const auto* section = coff_object->section_at(section_index);
-  if (section == nullptr || return_section == nullptr) {
+  if (return_section == nullptr) {
     if (error != nullptr) {
       *error = DW_DLE_NDS;
     }
     return DW_DLV_NO_ENTRY;
   }
   *return_section = {};
+  if (section_index == 0U) {
+    // libdwarf 初始化阶段会按 ELF 约定访问 0 号空 section，必须返回一个可忽略的空段。
+    return_section->as_name = "";
+    return DW_DLV_OK;
+  }
+
+  const auto* coff_object = static_cast<TiCoffObject*>(object);
+  const auto* section = coff_object->section_at(section_index);
+  if (section == nullptr) {
+    if (error != nullptr) {
+      *error = DW_DLE_NDS;
+    }
+    return DW_DLV_NO_ENTRY;
+  }
   return_section->as_name = section->name.c_str();
   return_section->as_addr = section->physical_address;
   return_section->as_offset = section->file_offset;
@@ -265,17 +277,21 @@ const std::string& TiCoffObject::file_path() const noexcept { return file_path_;
 
 Dwarf_Unsigned TiCoffObject::file_size() const noexcept { return file_size_; }
 
-Dwarf_Unsigned TiCoffObject::section_count() const noexcept { return sections_.size(); }
+Dwarf_Unsigned TiCoffObject::section_count() const noexcept { return sections_.size() + 1U; }
 
 const TiCoffSection* TiCoffObject::section_at(const Dwarf_Unsigned section_index) const noexcept {
-  if (section_index >= sections_.size()) {
+  // libdwarf 的 object access API 按 ELF section 语义保留 0 号空 section。
+  if (section_index == 0U || section_index > sections_.size()) {
     return nullptr;
   }
-  return &sections_[static_cast<std::size_t>(section_index)];
+  return &sections_[static_cast<std::size_t>(section_index - 1U)];
 }
 
 std::vector<std::uint8_t> TiCoffObject::read_section_data(
   const Dwarf_Unsigned section_index) const {
+  if (section_index == 0U) {
+    throw DwarfError("TI-COFF section 0 为 libdwarf 保留空段，不能读取数据");
+  }
   const auto* section = section_at(section_index);
   if (section == nullptr) {
     throw DwarfError("TI-COFF section 索引不存在");
