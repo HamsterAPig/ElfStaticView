@@ -55,6 +55,7 @@ private:
   Dwarf_Debug tied_debug_ = nullptr;
   Backend backend_ = Backend::Elf;
   std::unique_ptr<TiCoffObject> ti_coff_object_;
+  Dwarf_Obj_Access_Interface_a ti_coff_access_ = {};
 };
 
 class DieHandle {

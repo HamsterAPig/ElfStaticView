@@ -306,10 +306,10 @@ DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
       throw DwarfError(message.str());
     }
 
-    auto access = make_ti_coff_dwarf_access(*ti_coff_object_);
+    ti_coff_access_ = make_ti_coff_dwarf_access(*ti_coff_object_);
     Dwarf_Error error = nullptr;
     const int result =
-      dwarf_object_init_b(&access, nullptr, nullptr, DW_GROUPNUMBER_ANY, &debug_, &error);
+      dwarf_object_init_b(&ti_coff_access_, nullptr, nullptr, DW_GROUPNUMBER_ANY, &debug_, &error);
     if (result != DW_DLV_OK) {
       const auto message = build_error_message("dwarf_object_init_b(TI-COFF) failed", error);
       destroy_error(error);
