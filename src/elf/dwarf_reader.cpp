@@ -3,6 +3,7 @@
 #include "analysis/model_utils.hpp"
 #include "elf/elf_symbol_table.hpp"
 #include "elf/dwarf_wrappers.hpp"
+#include "elf/ti_coff_object.hpp"
 
 #include <cstdlib>
 #include <algorithm>
@@ -2053,17 +2054,27 @@ ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& l
   model.metrics.variable_count_before_filter = context.variables.size();
   model.symbols = std::move(context.variables);
   const auto symbol_table_started_at = std::chrono::steady_clock::now();
-  const auto symbol_table = ElfSymbolTable::load(file_path);
-  model.metrics.symbol_table_ms = static_cast<std::uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now() - symbol_table_started_at).count());
-  model.elf_info = ElfFileInfo {.object_class = symbol_table.metadata().object_class,
-                                .byte_order = symbol_table.metadata().byte_order,
-                                .file_type = symbol_table.metadata().file_type,
-                                .machine = symbol_table.metadata().machine,
-                                .os_abi = symbol_table.metadata().os_abi};
-  // DWARF 位置表达式不总能直接给出静态绝对地址，这里再用 ELF 符号表补一遍静态对象地址。
-  apply_symbol_addresses(symbol_table, model.symbols);
+  if (is_elf_file(file_path)) {
+    const auto symbol_table = ElfSymbolTable::load(file_path);
+    model.metrics.symbol_table_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - symbol_table_started_at).count());
+    model.elf_info = ElfFileInfo {.object_class = symbol_table.metadata().object_class,
+                                  .byte_order = symbol_table.metadata().byte_order,
+                                  .file_type = symbol_table.metadata().file_type,
+                                  .machine = symbol_table.metadata().machine,
+                                  .os_abi = symbol_table.metadata().os_abi};
+    // DWARF 位置表达式不总能直接给出静态绝对地址，这里再用 ELF 符号表补一遍静态对象地址。
+    apply_symbol_addresses(symbol_table, model.symbols);
+  } else if (is_ti_c2000_coff_file(file_path)) {
+    model.metrics.symbol_table_ms = 0;
+    model.elf_info = ElfFileInfo {.object_class = "TI-COFF",
+                                  .byte_order = "Little endian",
+                                  .file_type = "Executable",
+                                  .machine = "TI C2000",
+                                  .os_abi = "TI C2000 CGT"};
+    // TI-COFF 变量地址依赖 DWARF location 表达式，暂不实现符号表补址。
+  }
   const auto deduplicate_started_at = std::chrono::steady_clock::now();
   deduplicate_variables(model.symbols);
   model.metrics.deduplicate_ms = static_cast<std::uint64_t>(
