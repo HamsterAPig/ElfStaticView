@@ -846,6 +846,321 @@ std::optional<Dwarf_Addr> indexed_address_from_die_location(Dwarf_Die die,
 }
 
 namespace {
+// 手工解析 DWARF 位置表达式字节序列，替代 libdwarf 中仅有声明未实现的
+// dwarf_loclist_from_expr_c。按 DWARF 规范逐字节解码操作码与操作数。
+[[nodiscard]] std::vector<LocationOp> decode_expression_ops(
+    const std::uint8_t* data,
+    std::size_t length,
+    Dwarf_Half address_size) {
+  std::vector<LocationOp> ops;
+  std::size_t offset = 0;
+
+  while (offset < length) {
+    const std::uint8_t opcode = data[offset++];
+    LocationOp op;
+    op.atom = opcode;
+
+    switch (opcode) {
+      // ── 零操作数指令 ──
+      case DW_OP_deref:          // 0x06
+      case DW_OP_dup:            // 0x12
+      case DW_OP_drop:           // 0x13
+      case DW_OP_over:           // 0x14
+      case DW_OP_swap:           // 0x16
+      case DW_OP_rot:            // 0x17
+      case DW_OP_xderef:         // 0x18
+      case DW_OP_abs:            // 0x19
+      case DW_OP_and:            // 0x1a
+      case DW_OP_div:            // 0x1b
+      case DW_OP_minus:          // 0x1c
+      case DW_OP_mod:            // 0x1d
+      case DW_OP_mul:            // 0x1e
+      case DW_OP_neg:            // 0x1f
+      case DW_OP_not:            // 0x20
+      case DW_OP_or:             // 0x21
+      case DW_OP_plus:           // 0x22
+      case DW_OP_shl:            // 0x24
+      case DW_OP_shr:            // 0x25
+      case DW_OP_shra:           // 0x26
+      case DW_OP_xor:            // 0x27
+      case DW_OP_eq:             // 0x29
+      case DW_OP_ge:             // 0x2a
+      case DW_OP_gt:             // 0x2b
+      case DW_OP_le:             // 0x2c
+      case DW_OP_lt:             // 0x2d
+      case DW_OP_ne:             // 0x2e
+      case DW_OP_nop:            // 0x96
+      case DW_OP_stack_value:    // 0x9f
+        break;
+
+      // ── DW_OP_constu (0x10): ULEB128 ──
+      case DW_OP_constu: {
+        Dwarf_Unsigned uleb_len = 0;
+        Dwarf_Unsigned val = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int r = dwarf_decode_leb128(
+            const_cast<char*>(cursor), &uleb_len, &val,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (r != DW_DLV_OK) return ops;
+        op.operand1 = val;
+        offset += uleb_len;
+        break;
+      }
+
+      // ── DW_OP_consts (0x11): SLEB128 ──
+      case DW_OP_consts: {
+        Dwarf_Unsigned uleb_result = 0;
+        Dwarf_Signed sleb_result = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int dec_result = dwarf_decode_signed_leb128(
+            const_cast<char*>(cursor), &uleb_result, &sleb_result,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (dec_result != DW_DLV_OK) return ops;
+        op.operand1 = static_cast<Dwarf_Unsigned>(sleb_result);
+        offset += uleb_result;
+        break;
+      }
+
+      // ── DW_OP_addr (0x03): address_size 字节地址 ──
+      case DW_OP_addr: {
+        if (offset + address_size > length) return ops;
+        Dwarf_Unsigned addr = 0;
+        for (Dwarf_Half i = 0; i < address_size; ++i) {
+          addr |= static_cast<Dwarf_Unsigned>(data[offset + i])
+                  << (i * 8);
+        }
+        op.operand1 = addr;
+        offset += address_size;
+        break;
+      }
+
+      // ── DW_OP_const1u (0x08): 1 字节 ──
+      case DW_OP_const1u:
+        if (offset >= length) return ops;
+        op.operand1 = data[offset++];
+        break;
+
+      // ── DW_OP_const1s (0x09): 1 字节有符号 ──
+      case DW_OP_const1s:
+        if (offset >= length) return ops;
+        op.operand1 = static_cast<Dwarf_Unsigned>(
+            static_cast<std::int8_t>(data[offset++]));
+        break;
+
+      // ── DW_OP_const2u (0x0a): 2 字节 ──
+      case DW_OP_const2u:
+        if (offset + 2 > length) return ops;
+        op.operand1 = static_cast<Dwarf_Unsigned>(data[offset])
+                     | (static_cast<Dwarf_Unsigned>(data[offset + 1]) << 8);
+        offset += 2;
+        break;
+
+      // ── DW_OP_const4u (0x0c): 4 字节 ──
+      case DW_OP_const4u:
+        if (offset + 4 > length) return ops;
+        op.operand1 = static_cast<Dwarf_Unsigned>(data[offset])
+                     | (static_cast<Dwarf_Unsigned>(data[offset + 1]) << 8)
+                     | (static_cast<Dwarf_Unsigned>(data[offset + 2]) << 16)
+                     | (static_cast<Dwarf_Unsigned>(data[offset + 3]) << 24);
+        offset += 4;
+        break;
+
+      // ── lit0..lit31 (0x30-0x4f): 字面量 ──
+      case 0x30: case 0x31: case 0x32: case 0x33:
+      case 0x34: case 0x35: case 0x36: case 0x37:
+      case 0x38: case 0x39: case 0x3a: case 0x3b:
+      case 0x3c: case 0x3d: case 0x3e: case 0x3f:
+      case 0x40: case 0x41: case 0x42: case 0x43:
+      case 0x44: case 0x45: case 0x46: case 0x47:
+      case 0x48: case 0x49: case 0x4a: case 0x4b:
+      case 0x4c: case 0x4d: case 0x4e: case 0x4f:
+        op.operand1 = opcode - 0x30;
+        break;
+
+      // ── reg0..reg31 (0x50-0x6f): 无操作数，寄存器号 = opcode - 0x50 ──
+      case 0x50: case 0x51: case 0x52: case 0x53:
+      case 0x54: case 0x55: case 0x56: case 0x57:
+      case 0x58: case 0x59: case 0x5a: case 0x5b:
+      case 0x5c: case 0x5d: case 0x5e: case 0x5f:
+      case 0x60: case 0x61: case 0x62: case 0x63:
+      case 0x64: case 0x65: case 0x66: case 0x67:
+      case 0x68: case 0x69: case 0x6a: case 0x6b:
+      case 0x6c: case 0x6d: case 0x6e: case 0x6f:
+        op.operand1 = opcode - 0x50;
+        break;
+
+      // ── breg0..breg31 (0x70-0x8f): SLEB128 偏移 ──
+      case 0x70: case 0x71: case 0x72: case 0x73:
+      case 0x74: case 0x75: case 0x76: case 0x77:
+      case 0x78: case 0x79: case 0x7a: case 0x7b:
+      case 0x7c: case 0x7d: case 0x7e: case 0x7f:
+      case 0x80: case 0x81: case 0x82: case 0x83:
+      case 0x84: case 0x85: case 0x86: case 0x87:
+      case 0x88: case 0x89: case 0x8a: case 0x8b:
+      case 0x8c: case 0x8d: case 0x8e: case 0x8f: {
+        op.operand1 = opcode - 0x70;
+        Dwarf_Unsigned uleb_result = 0;
+        Dwarf_Signed sleb_result = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int dec_result = dwarf_decode_signed_leb128(
+            const_cast<char*>(cursor), &uleb_result, &sleb_result,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (dec_result != DW_DLV_OK) return ops;
+        op.operand2 = static_cast<Dwarf_Unsigned>(sleb_result);
+        offset += uleb_result;
+        break;
+      }
+
+      // ── DW_OP_fbreg (0x91): SLEB128 偏移 ──
+      case DW_OP_fbreg: {
+        Dwarf_Unsigned uleb_result = 0;
+        Dwarf_Signed sleb_result = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int dec_result = dwarf_decode_signed_leb128(
+            const_cast<char*>(cursor), &uleb_result, &sleb_result,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (dec_result != DW_DLV_OK) return ops;
+        op.operand1 = static_cast<Dwarf_Unsigned>(sleb_result);
+        offset += uleb_result;
+        break;
+      }
+
+      // ── DW_OP_bregx (0x92): ULEB128 寄存器号 + SLEB128 偏移 ──
+      case DW_OP_bregx: {
+        Dwarf_Unsigned len1 = 0;
+        Dwarf_Unsigned val1 = 0;
+        {
+          const char* c1 = reinterpret_cast<const char*>(data + offset);
+          const int r1 = dwarf_decode_leb128(
+              const_cast<char*>(c1), &len1, &val1,
+              reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+          if (r1 != DW_DLV_OK) return ops;
+        }
+        op.operand1 = val1;
+        offset += len1;
+
+        Dwarf_Unsigned len2 = 0;
+        Dwarf_Signed val2 = 0;
+        {
+          const char* c2 = reinterpret_cast<const char*>(data + offset);
+          const int r2 = dwarf_decode_signed_leb128(
+              const_cast<char*>(c2), &len2, &val2,
+              reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+          if (r2 != DW_DLV_OK) return ops;
+        }
+        op.operand2 = static_cast<Dwarf_Unsigned>(val2);
+        offset += len2;
+        break;
+      }
+
+      // ── DW_OP_regx (0x90): ULEB128 寄存器号 ──
+      case DW_OP_regx: {
+        Dwarf_Unsigned uleb_len = 0;
+        Dwarf_Unsigned val = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int r = dwarf_decode_leb128(
+            const_cast<char*>(cursor), &uleb_len, &val,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (r != DW_DLV_OK) return ops;
+        op.operand1 = val;
+        offset += uleb_len;
+        break;
+      }
+
+      // ── DW_OP_piece (0x93): ULEB128 ──
+      case DW_OP_piece: {
+        Dwarf_Unsigned uleb_len = 0;
+        Dwarf_Unsigned val = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int r = dwarf_decode_leb128(
+            const_cast<char*>(cursor), &uleb_len, &val,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (r != DW_DLV_OK) return ops;
+        op.operand1 = val;
+        offset += uleb_len;
+        break;
+      }
+
+      // ── DW_OP_bit_piece (0x94): ULEB128 size + ULEB128 offset ──
+      case DW_OP_bit_piece: {
+        Dwarf_Unsigned len1 = 0;
+        Dwarf_Unsigned val1 = 0;
+        {
+          const char* c1 = reinterpret_cast<const char*>(data + offset);
+          const int r1 = dwarf_decode_leb128(
+              const_cast<char*>(c1), &len1, &val1,
+              reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+          if (r1 != DW_DLV_OK) return ops;
+        }
+        op.operand1 = val1;
+        offset += len1;
+
+        Dwarf_Unsigned len2 = 0;
+        Dwarf_Unsigned val2 = 0;
+        {
+          const char* c2 = reinterpret_cast<const char*>(data + offset);
+          const int r2 = dwarf_decode_leb128(
+              const_cast<char*>(c2), &len2, &val2,
+              reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+          if (r2 != DW_DLV_OK) return ops;
+        }
+        op.operand2 = val2;
+        offset += len2;
+        break;
+      }
+
+      // ── DW_OP_plus_uconst (0x23): ULEB128 ──
+      case DW_OP_plus_uconst: {
+        Dwarf_Unsigned uleb_len = 0;
+        Dwarf_Unsigned val = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int r = dwarf_decode_leb128(
+            const_cast<char*>(cursor), &uleb_len, &val,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (r != DW_DLV_OK) return ops;
+        op.operand1 = val;
+        offset += uleb_len;
+        break;
+      }
+
+      // ── DW_OP_addrx (0xa1): ULEB128 索引 ──
+      case DW_OP_addrx: {
+        Dwarf_Unsigned uleb_len = 0;
+        Dwarf_Unsigned val = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int r = dwarf_decode_leb128(
+            const_cast<char*>(cursor), &uleb_len, &val,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (r != DW_DLV_OK) return ops;
+        op.operand1 = val;
+        offset += uleb_len;
+        break;
+      }
+
+      // ── DW_OP_GNU_addr_index (0xfb): ULEB128 索引 ──
+      case 0xfb: {
+        Dwarf_Unsigned uleb_len = 0;
+        Dwarf_Unsigned val = 0;
+        const char* cursor = reinterpret_cast<const char*>(data + offset);
+        const int r = dwarf_decode_leb128(
+            const_cast<char*>(cursor), &uleb_len, &val,
+            reinterpret_cast<char*>(const_cast<std::uint8_t*>(data + length)));
+        if (r != DW_DLV_OK) return ops;
+        op.operand1 = val;
+        offset += uleb_len;
+        break;
+      }
+
+      default:
+        // 无法识别的操作码，跳过此字节继续解析后续操作
+        break;
+    }
+
+    ops.push_back(std::move(op));
+  }
+
+  return ops;
+}
 
 [[nodiscard]] std::optional<LocationDescription> read_location_list_head(Dwarf_Loc_Head_c head,
                                                                          Dwarf_Unsigned entry_count) {
@@ -952,27 +1267,29 @@ std::optional<LocationDescription> read_location_expression(Dwarf_Debug debug,
                                                             Dwarf_Half address_size,
                                                             Dwarf_Half offset_size,
                                                             Dwarf_Half dwarf_version) {
+  (void)offset_size;
+  (void)dwarf_version;
   if (debug == nullptr || expression_data == nullptr) {
     return std::nullopt;
   }
 
-  Dwarf_Loc_Head_c head = nullptr;
-  Dwarf_Unsigned entry_count = 0;
-  Dwarf_Error error = nullptr;
-  const int result = dwarf_loclist_from_expr_c(debug,
-                                               expression_data,
-                                               expression_length,
-                                               address_size,
-                                               offset_size,
-                                               dwarf_version,
-                                               &head,
-                                               &entry_count,
-                                               &error);
-  if (result != DW_DLV_OK || head == nullptr) {
-    return std::nullopt;
-  }
-  auto description = read_location_list_head(head, entry_count);
-  dwarf_dealloc_loc_head_c(head);
+  // libdwarf 当前版本 (2.3.1-33) 的 dwarf_loclist_from_expr_c 仅有声明而无实现，
+  // 因此改用手工解析 DWARF 表达式字节序列。
+  const auto* bytes = static_cast<const std::uint8_t*>(expression_data);
+  auto ops = decode_expression_ops(bytes,
+                                   static_cast<std::size_t>(expression_length),
+                                   address_size);
+  LocationDescription description;
+  description.kind = DW_LKIND_expression;
+  description.entry_count = 1;
+
+  LocationDescription::Entry entry;
+  entry.operations = ops;
+  entry.raw_low_pc = 0;
+  entry.raw_high_pc = 0;
+  description.entries.push_back(std::move(entry));
+  description.operations = std::move(ops);
+
   return description;
 }
 
