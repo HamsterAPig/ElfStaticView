@@ -49,6 +49,156 @@ namespace {
   return hex == filter || hex.substr(2) == filter;
 }
 
+[[nodiscard]] const char* fallback_location_op_name(const Dwarf_Small atom) {
+  switch (atom) {
+    case DW_OP_addr:
+      return "DW_OP_addr";
+    case DW_OP_deref:
+      return "DW_OP_deref";
+    case DW_OP_constu:
+      return "DW_OP_constu";
+    case DW_OP_consts:
+      return "DW_OP_consts";
+    case DW_OP_dup:
+      return "DW_OP_dup";
+    case DW_OP_drop:
+      return "DW_OP_drop";
+    case DW_OP_over:
+      return "DW_OP_over";
+    case DW_OP_swap:
+      return "DW_OP_swap";
+    case DW_OP_rot:
+      return "DW_OP_rot";
+    case DW_OP_xderef:
+      return "DW_OP_xderef";
+    case DW_OP_abs:
+      return "DW_OP_abs";
+    case DW_OP_and:
+      return "DW_OP_and";
+    case DW_OP_div:
+      return "DW_OP_div";
+    case DW_OP_minus:
+      return "DW_OP_minus";
+    case DW_OP_mod:
+      return "DW_OP_mod";
+    case DW_OP_mul:
+      return "DW_OP_mul";
+    case DW_OP_neg:
+      return "DW_OP_neg";
+    case DW_OP_not:
+      return "DW_OP_not";
+    case DW_OP_or:
+      return "DW_OP_or";
+    case DW_OP_plus:
+      return "DW_OP_plus";
+    case DW_OP_plus_uconst:
+      return "DW_OP_plus_uconst";
+    case DW_OP_shl:
+      return "DW_OP_shl";
+    case DW_OP_shr:
+      return "DW_OP_shr";
+    case DW_OP_shra:
+      return "DW_OP_shra";
+    case DW_OP_xor:
+      return "DW_OP_xor";
+    case DW_OP_bra:
+      return "DW_OP_bra";
+    case DW_OP_eq:
+      return "DW_OP_eq";
+    case DW_OP_ge:
+      return "DW_OP_ge";
+    case DW_OP_gt:
+      return "DW_OP_gt";
+    case DW_OP_le:
+      return "DW_OP_le";
+    case DW_OP_lt:
+      return "DW_OP_lt";
+    case DW_OP_ne:
+      return "DW_OP_ne";
+    case DW_OP_skip:
+      return "DW_OP_skip";
+    case DW_OP_fbreg:
+      return "DW_OP_fbreg";
+    case DW_OP_piece:
+      return "DW_OP_piece";
+    case DW_OP_deref_size:
+      return "DW_OP_deref_size";
+    case DW_OP_xderef_size:
+      return "DW_OP_xderef_size";
+    case DW_OP_nop:
+      return "DW_OP_nop";
+    case DW_OP_call_frame_cfa:
+      return "DW_OP_call_frame_cfa";
+    case DW_OP_bit_piece:
+      return "DW_OP_bit_piece";
+    case DW_OP_implicit_value:
+      return "DW_OP_implicit_value";
+    case DW_OP_stack_value:
+      return "DW_OP_stack_value";
+    case DW_OP_addrx:
+      return "DW_OP_addrx";
+    case DW_OP_constx:
+      return "DW_OP_constx";
+    case DW_OP_entry_value:
+      return "DW_OP_entry_value";
+    case DW_OP_const_type:
+      return "DW_OP_const_type";
+    case DW_OP_regval_type:
+      return "DW_OP_regval_type";
+    case DW_OP_deref_type:
+      return "DW_OP_deref_type";
+    case DW_OP_xderef_type:
+      return "DW_OP_xderef_type";
+    case DW_OP_convert:
+      return "DW_OP_convert";
+    case DW_OP_reinterpret:
+      return "DW_OP_reinterpret";
+    case DW_OP_GNU_addr_index:
+      return "DW_OP_GNU_addr_index";
+    default:
+      break;
+  }
+
+  if (atom >= DW_OP_lit0 && atom <= DW_OP_lit31) {
+    return "DW_OP_lit";
+  }
+  if (atom >= DW_OP_reg0 && atom <= DW_OP_reg31) {
+    return "DW_OP_reg";
+  }
+  if (atom >= DW_OP_breg0 && atom <= DW_OP_breg31) {
+    return "DW_OP_breg";
+  }
+  return nullptr;
+}
+
+void assign_location_op_name(LocationOp& op) {
+  const char* op_name = nullptr;
+  if (dwarf_get_OP_name(op.atom, &op_name) == DW_DLV_OK && op_name != nullptr) {
+    op.name = op_name;
+    return;
+  }
+
+  const char* fallback = fallback_location_op_name(op.atom);
+  if (fallback == nullptr) {
+    return;
+  }
+
+  if (std::strcmp(fallback, "DW_OP_lit") == 0) {
+    op.name = "DW_OP_lit" + std::to_string(static_cast<unsigned int>(op.atom - DW_OP_lit0));
+    return;
+  }
+  if (std::strcmp(fallback, "DW_OP_reg") == 0) {
+    op.name = "DW_OP_reg" + std::to_string(static_cast<unsigned int>(op.atom - DW_OP_reg0));
+    return;
+  }
+  if (std::strcmp(fallback, "DW_OP_breg") == 0) {
+    op.name = "DW_OP_breg" + std::to_string(static_cast<unsigned int>(op.atom - DW_OP_breg0));
+    return;
+  }
+
+  op.name = fallback;
+}
+
 void trace_sig8(const Dwarf_Sig8& signature, const std::string& message) {
   if (!should_trace_sig8(signature)) {
     return;
@@ -1156,6 +1306,7 @@ namespace {
         break;
     }
 
+    assign_location_op_name(op);
     ops.push_back(std::move(op));
   }
 
@@ -1237,10 +1388,7 @@ namespace {
                                         &offset_for_branch,
                                         &error);
         if (op_result == DW_DLV_OK) {
-          const char* op_name = nullptr;
-          if (dwarf_get_OP_name(op.atom, &op_name) == DW_DLV_OK && op_name != nullptr) {
-            op.name = op_name;
-          }
+          assign_location_op_name(op);
           entry.operations.push_back(op);
           description.operations.push_back(op);
         }
