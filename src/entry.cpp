@@ -34,7 +34,7 @@ struct CliOptions {
 
 using EntryRunner = int (*)(int, char**);
 
-#if defined(_WIN32)
+#if defined(_MSC_VER)
 int run_with_access_violation_guard(EntryRunner runner, const int argc, char** argv) {
   __try {
     return runner(argc, argv);

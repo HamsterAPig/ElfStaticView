@@ -1851,7 +1851,7 @@ void verify_dwarf5_loclists_base_addressx_fixture() {
   expect_true(local_die.has_value(), "base_addressx loclists fixture 应能定位 local DIE");
   auto location_attr = elf_static_view::elf::attribute_of(debug, local_die->get(), DW_AT_location);
   expect_true(location_attr.has_value(), "base_addressx loclists fixture 的 local 应存在 DW_AT_location");
-  const auto location = elf_static_view::elf::read_location_description(location_attr->get());
+  const auto location = elf_static_view::elf::read_location_description(debug, location_attr->get(), 8, 4, 5);
   expect_true(location.has_value(), "DW_FORM_loclistx 的 location 应可被 read_location_description 读取");
   expect_true(location->entry_count >= 4, "DW_FORM_loclistx 应至少保留四条 loclist entry");
   const auto concrete_entries =
@@ -1862,6 +1862,45 @@ void verify_dwarf5_loclists_base_addressx_fixture() {
                            (entry.raw_low_pc.has_value() && entry.raw_high_pc.has_value());
                   });
   expect_true(concrete_entries >= 2, "DW_FORM_loclistx 应至少返回两条可用 range");
+}
+
+void verify_location_expression_block_decoding() {
+  elf_static_view::elf::DebugHandle debug_handle(ELF_STATIC_VIEW_C_FIXTURE_PATH);
+  Dwarf_Debug debug = debug_handle.get();
+
+  std::vector<std::uint8_t> absolute_expr{
+    DW_OP_addr,
+    0x7e,
+    0x19,
+    0x01,
+    0x00,
+  };
+  const auto absolute_location = elf_static_view::elf::read_location_expression(debug,
+                                                                               absolute_expr.data(),
+                                                                               absolute_expr.size(),
+                                                                               4,
+                                                                               4,
+                                                                               2);
+  expect_true(absolute_location.has_value(), "DW_OP_addr 表达式块应可被解析");
+  expect_true(absolute_location->kind == DW_LKIND_expression, "DW_OP_addr 表达式块应标记为 expression");
+  expect_true(absolute_location->operations.size() == 1, "DW_OP_addr 表达式块应只包含一个操作");
+  expect_true(absolute_location->operations.front().atom == DW_OP_addr, "表达式块操作码应为 DW_OP_addr");
+  expect_true(absolute_location->operations.front().operand1 == 0x1197e,
+              "DW_FORM_block1 风格表达式应按 4 字节地址解析出 0x1197e");
+
+  std::vector<std::uint8_t> breg_expr{
+    static_cast<std::uint8_t>(DW_OP_breg20),
+    0x00,
+  };
+  const auto breg_location = elf_static_view::elf::read_location_expression(debug,
+                                                                           breg_expr.data(),
+                                                                           breg_expr.size(),
+                                                                           4,
+                                                                           4,
+                                                                           2);
+  expect_true(breg_location.has_value(), "DW_OP_breg20 表达式块应可被解析且不崩溃");
+  expect_true(breg_location->operations.size() == 1, "DW_OP_breg20 表达式块应只包含一个操作");
+  expect_true(breg_location->operations.front().atom == DW_OP_breg20, "表达式块操作码应为 DW_OP_breg20");
 }
 
 void verify_dwarf5_loclists_startx_length_fixture() {
@@ -3281,6 +3320,7 @@ int main() {
     verify_dwarf5_loclists_fixture();
     verify_dwarf5_loclists_base_default_fixture();
     verify_dwarf5_loclists_base_addressx_fixture();
+    verify_location_expression_block_decoding();
     verify_dwarf5_loclists_start_end_fixture();
     verify_dwarf5_loclists_startx_endx_fixture();
     verify_dwarf5_loclists_startx_length_fixture();
