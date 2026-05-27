@@ -306,10 +306,10 @@ DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
       throw DwarfError(message.str());
     }
 
-    auto access = make_ti_coff_dwarf_access(*ti_coff_object_);
+    ti_coff_access_ = make_ti_coff_dwarf_access(*ti_coff_object_);
     Dwarf_Error error = nullptr;
     const int result =
-      dwarf_object_init_b(&access, nullptr, nullptr, DW_GROUPNUMBER_ANY, &debug_, &error);
+      dwarf_object_init_b(&ti_coff_access_, nullptr, nullptr, DW_GROUPNUMBER_ANY, &debug_, &error);
     if (result != DW_DLV_OK) {
       const auto message = build_error_message("dwarf_object_init_b(TI-COFF) failed", error);
       destroy_error(error);
@@ -845,21 +845,20 @@ std::optional<Dwarf_Addr> indexed_address_from_die_location(Dwarf_Die die,
   return value;
 }
 
-std::optional<LocationDescription> read_location_description(Dwarf_Attribute attr) {
-  Dwarf_Loc_Head_c head = nullptr;
-  Dwarf_Unsigned entry_count = 0;
-  Dwarf_Error error = nullptr;
-  const int result = dwarf_get_loclist_c(attr, &head, &entry_count, &error);
-  if (result == DW_DLV_NO_ENTRY) {
-    return std::nullopt;
-  }
-  if (result != DW_DLV_OK) {
+namespace {
+
+[[nodiscard]] std::optional<LocationDescription> read_location_list_head(Dwarf_Loc_Head_c head,
+                                                                         Dwarf_Unsigned entry_count) {
+  if (head == nullptr) {
     return std::nullopt;
   }
 
+  Dwarf_Error error = nullptr;
   LocationDescription description;
   description.entry_count = static_cast<std::uint64_t>(entry_count);
-  dwarf_get_loclist_head_kind(head, &description.kind, &error);
+  if (dwarf_get_loclist_head_kind(head, &description.kind, &error) != DW_DLV_OK) {
+    return std::nullopt;
+  }
   for (Dwarf_Unsigned entry_index = 0; entry_index < entry_count; ++entry_index) {
     LocationDescription::Entry entry;
     Dwarf_Small lle_value = 0;
@@ -936,6 +935,106 @@ std::optional<LocationDescription> read_location_description(Dwarf_Attribute att
       }
     }
   }
+  return description;
+}
+
+[[nodiscard]] bool is_location_expression_form(const Dwarf_Half form) {
+  return form == DW_FORM_block || form == DW_FORM_block1 ||
+         form == DW_FORM_block2 || form == DW_FORM_block4 ||
+         form == DW_FORM_exprloc;
+}
+
+}  // namespace
+
+std::optional<LocationDescription> read_location_expression(Dwarf_Debug debug,
+                                                            Dwarf_Ptr expression_data,
+                                                            Dwarf_Unsigned expression_length,
+                                                            Dwarf_Half address_size,
+                                                            Dwarf_Half offset_size,
+                                                            Dwarf_Half dwarf_version) {
+  if (debug == nullptr || expression_data == nullptr) {
+    return std::nullopt;
+  }
+
+  Dwarf_Loc_Head_c head = nullptr;
+  Dwarf_Unsigned entry_count = 0;
+  Dwarf_Error error = nullptr;
+  const int result = dwarf_loclist_from_expr_c(debug,
+                                               expression_data,
+                                               expression_length,
+                                               address_size,
+                                               offset_size,
+                                               dwarf_version,
+                                               &head,
+                                               &entry_count,
+                                               &error);
+  if (result != DW_DLV_OK || head == nullptr) {
+    return std::nullopt;
+  }
+  auto description = read_location_list_head(head, entry_count);
+  dwarf_dealloc_loc_head_c(head);
+  return description;
+}
+
+std::optional<LocationDescription> read_location_description(Dwarf_Debug debug,
+                                                             Dwarf_Attribute attr,
+                                                             Dwarf_Half address_size,
+                                                             Dwarf_Half offset_size,
+                                                             Dwarf_Half dwarf_version) {
+  Dwarf_Half form = 0;
+  Dwarf_Error form_error = nullptr;
+  const int form_result = dwarf_whatform(attr, &form, &form_error);
+  if (form_result == DW_DLV_NO_ENTRY) {
+    return std::nullopt;
+  }
+  if (form_result != DW_DLV_OK) {
+    return std::nullopt;
+  }
+
+  if (is_location_expression_form(form)) {
+    // DW_FORM_block* / exprloc 保存的是位置表达式字节，不是 .debug_loc/.debug_loclists 引用。
+    // TI-COFF DWARF2 会用 DW_FORM_block1 + DW_OP_addr 表达静态变量地址，不能送入 dwarf_get_loclist_c。
+    if (form == DW_FORM_exprloc) {
+      Dwarf_Unsigned expression_length = 0;
+      Dwarf_Ptr expression_data = nullptr;
+      Dwarf_Error error = nullptr;
+      const int expr_result = dwarf_formexprloc(attr, &expression_length, &expression_data, &error);
+      if (expr_result != DW_DLV_OK) {
+        return std::nullopt;
+      }
+      return read_location_expression(debug,
+                                      expression_data,
+                                      expression_length,
+                                      address_size,
+                                      offset_size,
+                                      dwarf_version);
+    }
+
+    Dwarf_Block* block = nullptr;
+    Dwarf_Error error = nullptr;
+    const int block_result = dwarf_formblock(attr, &block, &error);
+    if (block_result != DW_DLV_OK || block == nullptr) {
+      return std::nullopt;
+    }
+    return read_location_expression(debug,
+                                    block->bl_data,
+                                    block->bl_len,
+                                    address_size,
+                                    offset_size,
+                                    dwarf_version);
+  }
+
+  Dwarf_Loc_Head_c head = nullptr;
+  Dwarf_Unsigned entry_count = 0;
+  Dwarf_Error error = nullptr;
+  const int result = dwarf_get_loclist_c(attr, &head, &entry_count, &error);
+  if (result == DW_DLV_NO_ENTRY) {
+    return std::nullopt;
+  }
+  if (result != DW_DLV_OK || head == nullptr) {
+    return std::nullopt;
+  }
+  auto description = read_location_list_head(head, entry_count);
   dwarf_dealloc_loc_head_c(head);
   return description;
 }

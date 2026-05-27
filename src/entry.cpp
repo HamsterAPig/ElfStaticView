@@ -32,6 +32,27 @@ struct CliOptions {
   std::optional<std::int64_t> address_bias;
 };
 
+using EntryRunner = int (*)(int, char**);
+
+#if defined(_MSC_VER)
+int run_with_access_violation_guard(EntryRunner runner, const int argc, char** argv) {
+  __try {
+    return runner(argc, argv);
+  } __except (GetExceptionCode() == EXCEPTION_ACCESS_VIOLATION ? EXCEPTION_EXECUTE_HANDLER
+                                                               : EXCEPTION_CONTINUE_SEARCH) {
+    // libdwarf 解析非 ELF 厂商对象时可能触发结构化异常；CLI 统一转成受控错误码。
+    elf_static_view::logging::log(
+      elf_static_view::logging::Level::Error,
+      "底层 DWARF/对象文件解析触发访问冲突，已中止当前文件分析");
+    return 1;
+  }
+}
+#else
+int run_with_access_violation_guard(EntryRunner runner, const int argc, char** argv) {
+  return runner(argc, argv);
+}
+#endif
+
 std::filesystem::path resolve_executable_path(char** argv) {
   std::filesystem::path executable_path = argv[0];
 #if defined(_WIN32)
@@ -188,7 +209,7 @@ int elf_static_view_entry(const int argc, char** argv) {
       return run_ui(argc, argv);
     }
     if (command == "scan" || command == "dump" || command == "dwarf-dump") {
-      return run_cli(argc, argv);
+      return run_with_access_violation_guard(run_cli, argc, argv);
     }
     throw std::runtime_error("未知命令: " + command);
   } catch (const std::exception& error) {
