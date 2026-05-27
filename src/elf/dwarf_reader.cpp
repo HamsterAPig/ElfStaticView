@@ -3,6 +3,7 @@
 #include "analysis/model_utils.hpp"
 #include "elf/elf_symbol_table.hpp"
 #include "elf/dwarf_wrappers.hpp"
+#include "elf/ti_coff_object.hpp"
 
 #include <cstdlib>
 #include <algorithm>
@@ -41,6 +42,9 @@ struct ReaderContext {
   std::vector<Dwarf_Half> scope_tag_stack;
   std::string current_compile_unit_name;
   std::string current_compile_unit_source_path;
+  Dwarf_Half current_address_size = 0;
+  Dwarf_Half current_offset_size = 0;
+  Dwarf_Half current_dwarf_version = 0;
   std::size_t skipped_compile_unit_count = 0;
 };
 
@@ -973,7 +977,8 @@ void index_class_declaration_scopes(ReaderContext& context,
   return stream.str();
 }
 
-[[nodiscard]] std::optional<std::int64_t> data_member_location_offset(Dwarf_Attribute attr) {
+[[nodiscard]] std::optional<std::int64_t> data_member_location_offset(const ReaderContext& context,
+                                                                      Dwarf_Attribute attr) {
   if (const auto offset_value = unsigned_attr(attr); offset_value.has_value()) {
     if (offset_value.value() <= static_cast<Dwarf_Unsigned>(std::numeric_limits<std::int64_t>::max())) {
       return static_cast<std::int64_t>(offset_value.value());
@@ -984,7 +989,11 @@ void index_class_declaration_scopes(ReaderContext& context,
     return signed_value.value();
   }
 
-  const auto location_desc = read_location_description(attr);
+  const auto location_desc = read_location_description(context.debug,
+                                                       attr,
+                                                       context.current_address_size,
+                                                       context.current_offset_size,
+                                                       context.current_dwarf_version);
   if (!location_desc.has_value() || location_desc->operations.size() != 1) {
     return std::nullopt;
   }
@@ -1423,7 +1432,11 @@ void inherit_variable_metadata_from_reference(ReaderContext& context,
       (variable.availability == Availability::Unavailable && !variable.address.absolute_address.has_value())) {
     if (const auto location_attr = attribute_of(context.debug, reference_die->get(), DW_AT_location);
         location_attr.has_value()) {
-      const auto location_desc = read_location_description(location_attr->get());
+      const auto location_desc = read_location_description(context.debug,
+                                                           location_attr->get(),
+                                                           context.current_address_size,
+                                                           context.current_offset_size,
+                                                           context.current_dwarf_version);
       const auto direct_addr = address_attr(location_attr->get());
       const auto resolved_indexed_addr =
         location_desc.has_value() ? indexed_address_from_die_location(reference_die->get(), location_desc.value())
@@ -1557,7 +1570,7 @@ void record_type(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag, co
         if (const auto location_attr =
               attribute_of(context.debug, current.get(), DW_AT_data_member_location);
             location_attr.has_value()) {
-          member.address.relative_offset = data_member_location_offset(location_attr->get());
+          member.address.relative_offset = data_member_location_offset(context, location_attr->get());
         } else if (type.members.empty() && !declaration_only) {
           // DWARF 允许省略 0 偏移成员的位置属性；首个实例成员地址就是对象基址。
           member.address.relative_offset = 0;
@@ -1710,8 +1723,13 @@ void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag
   const auto external_attr = attribute_of(context.debug, die, DW_AT_external);
   const bool external = external_attr.has_value() && flag_attr(external_attr->get()).value_or(false);
   const auto location_attr = attribute_of(context.debug, die, DW_AT_location);
-  const auto location_desc =
-    location_attr.has_value() ? read_location_description(location_attr->get()) : std::nullopt;
+  const auto location_desc = location_attr.has_value()
+                               ? read_location_description(context.debug,
+                                                           location_attr->get(),
+                                                           context.current_address_size,
+                                                           context.current_offset_size,
+                                                           context.current_dwarf_version)
+                               : std::nullopt;
   const auto direct_addr = location_attr.has_value()
                              ? address_attr(location_attr->get())
                              : std::nullopt;
@@ -1975,6 +1993,9 @@ ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& l
     } else {
       cu.source_path = normalize_rule_path(cu.name);
     }
+    context.current_address_size = address_size;
+    context.current_offset_size = length_size;
+    context.current_dwarf_version = version_stamp;
     if (const auto language_attr = attribute_of(context.debug, cu_die.get(), DW_AT_language);
         language_attr.has_value()) {
       cu.language = language_name(unsigned_attr(language_attr->get()));
@@ -2033,17 +2054,27 @@ ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& l
   model.metrics.variable_count_before_filter = context.variables.size();
   model.symbols = std::move(context.variables);
   const auto symbol_table_started_at = std::chrono::steady_clock::now();
-  const auto symbol_table = ElfSymbolTable::load(file_path);
-  model.metrics.symbol_table_ms = static_cast<std::uint64_t>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-      std::chrono::steady_clock::now() - symbol_table_started_at).count());
-  model.elf_info = ElfFileInfo {.object_class = symbol_table.metadata().object_class,
-                                .byte_order = symbol_table.metadata().byte_order,
-                                .file_type = symbol_table.metadata().file_type,
-                                .machine = symbol_table.metadata().machine,
-                                .os_abi = symbol_table.metadata().os_abi};
-  // DWARF 位置表达式不总能直接给出静态绝对地址，这里再用 ELF 符号表补一遍静态对象地址。
-  apply_symbol_addresses(symbol_table, model.symbols);
+  if (is_elf_file(file_path)) {
+    const auto symbol_table = ElfSymbolTable::load(file_path);
+    model.metrics.symbol_table_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - symbol_table_started_at).count());
+    model.elf_info = ElfFileInfo {.object_class = symbol_table.metadata().object_class,
+                                  .byte_order = symbol_table.metadata().byte_order,
+                                  .file_type = symbol_table.metadata().file_type,
+                                  .machine = symbol_table.metadata().machine,
+                                  .os_abi = symbol_table.metadata().os_abi};
+    // DWARF 位置表达式不总能直接给出静态绝对地址，这里再用 ELF 符号表补一遍静态对象地址。
+    apply_symbol_addresses(symbol_table, model.symbols);
+  } else if (is_ti_c2000_coff_file(file_path)) {
+    model.metrics.symbol_table_ms = 0;
+    model.elf_info = ElfFileInfo {.object_class = "TI-COFF",
+                                  .byte_order = "Little endian",
+                                  .file_type = "Executable",
+                                  .machine = "TI C2000",
+                                  .os_abi = "TI C2000 CGT"};
+    // TI-COFF 变量地址依赖 DWARF location 表达式，暂不实现符号表补址。
+  }
   const auto deduplicate_started_at = std::chrono::steady_clock::now();
   deduplicate_variables(model.symbols);
   model.metrics.deduplicate_ms = static_cast<std::uint64_t>(
