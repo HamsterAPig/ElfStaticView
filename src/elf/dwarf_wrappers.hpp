@@ -164,7 +164,18 @@ struct LocationDescription {
   Dwarf_Die die,
   const LocationDescription& location);
 [[nodiscard]] std::optional<LocationDescription> read_location_description(
-  Dwarf_Attribute attr);
+  Dwarf_Debug debug,
+  Dwarf_Attribute attr,
+  Dwarf_Half address_size,
+  Dwarf_Half offset_size,
+  Dwarf_Half dwarf_version);
+[[nodiscard]] std::optional<LocationDescription> read_location_expression(
+  Dwarf_Debug debug,
+  Dwarf_Ptr expression_data,
+  Dwarf_Unsigned expression_length,
+  Dwarf_Half address_size,
+  Dwarf_Half offset_size,
+  Dwarf_Half dwarf_version);
 [[nodiscard]] std::optional<LocationDescription> read_range_description(
   Dwarf_Attribute attr,
   Dwarf_Die owner_die = nullptr);
