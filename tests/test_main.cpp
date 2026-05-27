@@ -1,6 +1,7 @@
 #include "analysis/address_bias.hpp"
 #include "elf/dwarf_wrappers.hpp"
 #include "elf/elf_symbol_table.hpp"
+#include "elf/ti_coff_object.hpp"
 #include "elf_static_view/project.hpp"
 #include "platform/utf8.hpp"
 #include "ui/app_state.hpp"
@@ -2362,6 +2363,14 @@ void append_u64(std::vector<std::uint8_t>& bytes, const std::uint64_t value, con
   append_integer(bytes, value, sizeof(value), endian);
 }
 
+void overwrite_u32_le(std::vector<std::uint8_t>& bytes,
+                      const std::size_t offset,
+                      const std::uint32_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index) {
+    bytes[offset + index] = static_cast<std::uint8_t>((value >> (index * 8U)) & 0xffU);
+  }
+}
+
 void write_padding(std::vector<std::uint8_t>& bytes, const std::size_t target_size) {
   if (bytes.size() < target_size) {
     bytes.resize(target_size, 0U);
@@ -2531,6 +2540,115 @@ std::vector<std::uint8_t> build_metadata_fixture(const FixtureClass elf_class,
   append_section_header(bytes, elf_class, endian, 0U, 0U, 0U, 0U, 0U);
   append_section_header(bytes, elf_class, endian, 0U, 0U, 0U, 0U, 0U);
   return bytes;
+}
+
+void append_ti_coff_section_header(std::vector<std::uint8_t>& bytes,
+                                   const std::uint32_t name_string_offset,
+                                   const std::uint32_t size,
+                                   const std::uint32_t file_offset) {
+  append_u32(bytes, 0U, FixtureEndian::Little);
+  append_u32(bytes, name_string_offset, FixtureEndian::Little);
+  append_u32(bytes, 0U, FixtureEndian::Little);
+  append_u32(bytes, 0U, FixtureEndian::Little);
+  append_u32(bytes, size, FixtureEndian::Little);
+  append_u32(bytes, file_offset, FixtureEndian::Little);
+  append_u32(bytes, 0U, FixtureEndian::Little);
+  append_u32(bytes, 0U, FixtureEndian::Little);
+  append_u16(bytes, 0U, FixtureEndian::Little);
+  append_u16(bytes, 0U, FixtureEndian::Little);
+  append_u16(bytes, 0U, FixtureEndian::Little);
+  write_padding(bytes, bytes.size() + 10U);
+}
+
+std::vector<std::uint8_t> build_ti_coff_debug_fixture() {
+  constexpr std::size_t header_size = 22U;
+  constexpr std::size_t section_header_size = 48U;
+  constexpr std::size_t section_count = 2U;
+  const std::vector<std::uint8_t> debug_info = {0x11U, 0x22U, 0x33U};
+  const std::vector<std::uint8_t> debug_abbrev = {0x44U, 0x55U};
+  const std::size_t debug_info_offset = header_size + section_header_size * section_count;
+  const std::size_t debug_abbrev_offset = debug_info_offset + debug_info.size();
+  const std::size_t string_table_offset = debug_abbrev_offset + debug_abbrev.size();
+  const std::string debug_info_name = ".debug_info";
+  const std::string debug_abbrev_name = ".debug_abbrev";
+  const std::uint32_t debug_info_name_offset = 4U;
+  const std::uint32_t debug_abbrev_name_offset =
+    debug_info_name_offset + static_cast<std::uint32_t>(debug_info_name.size() + 1U);
+  const std::uint32_t string_table_size =
+    debug_abbrev_name_offset + static_cast<std::uint32_t>(debug_abbrev_name.size() + 1U);
+
+  std::vector<std::uint8_t> bytes;
+  append_u16(bytes, 0x00c2U, FixtureEndian::Little);
+  append_u16(bytes, static_cast<std::uint16_t>(section_count), FixtureEndian::Little);
+  append_u32(bytes, 0U, FixtureEndian::Little);
+  append_u32(bytes, static_cast<std::uint32_t>(string_table_offset), FixtureEndian::Little);
+  append_u32(bytes, 0U, FixtureEndian::Little);
+  append_u16(bytes, 0U, FixtureEndian::Little);
+  append_u16(bytes, 0U, FixtureEndian::Little);
+  write_padding(bytes, header_size);
+
+  append_ti_coff_section_header(bytes,
+                                debug_info_name_offset,
+                                static_cast<std::uint32_t>(debug_info.size()),
+                                static_cast<std::uint32_t>(debug_info_offset));
+  append_ti_coff_section_header(bytes,
+                                debug_abbrev_name_offset,
+                                static_cast<std::uint32_t>(debug_abbrev.size()),
+                                static_cast<std::uint32_t>(debug_abbrev_offset));
+  bytes.insert(bytes.end(), debug_info.begin(), debug_info.end());
+  bytes.insert(bytes.end(), debug_abbrev.begin(), debug_abbrev.end());
+  append_u32(bytes, string_table_size, FixtureEndian::Little);
+  bytes.insert(bytes.end(), debug_info_name.begin(), debug_info_name.end());
+  bytes.push_back(0U);
+  bytes.insert(bytes.end(), debug_abbrev_name.begin(), debug_abbrev_name.end());
+  bytes.push_back(0U);
+  overwrite_u32_le(bytes, string_table_offset, string_table_size);
+  return bytes;
+}
+
+void verify_ti_coff_object_section_indices() {
+  const auto path = std::filesystem::temp_directory_path() / "elf_static_view_ti_coff_debug_sections.out";
+  const auto bytes = build_ti_coff_debug_fixture();
+  {
+    std::ofstream output(path, std::ios::binary);
+    if (!output.is_open()) {
+      throw std::runtime_error("无法写入 TI-COFF fixture: " + path.string());
+    }
+    output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    if (!output) {
+      throw std::runtime_error("写入 TI-COFF fixture 失败: " + path.string());
+    }
+  }
+
+  std::error_code remove_error;
+  try {
+    elf_static_view::elf::TiCoffObject object(path.string());
+    expect_true(object.section_count() == 3U, "TI-COFF section_count 应包含 libdwarf 保留 0 号空段");
+    expect_true(object.section_at(0U) == nullptr, "TI-COFF 0 号 section 应保持空段语义");
+    const auto* debug_info_section = object.section_at(1U);
+    expect_true(debug_info_section != nullptr, "TI-COFF 1 号 section 应指向第一个真实 debug section");
+    expect_true(debug_info_section->name == ".debug_info", "TI-COFF 1 号 section 应为 .debug_info");
+    const auto* debug_abbrev_section = object.section_at(2U);
+    expect_true(debug_abbrev_section != nullptr, "TI-COFF 2 号 section 应指向第二个真实 debug section");
+    expect_true(debug_abbrev_section->name == ".debug_abbrev", "TI-COFF 2 号 section 应为 .debug_abbrev");
+    expect_true(object.section_at(3U) == nullptr, "TI-COFF 超出 section_count 的索引应返回空");
+    expect_true(object.read_section_data(1U) == std::vector<std::uint8_t>({0x11U, 0x22U, 0x33U}),
+                "TI-COFF 读取 1 号 section 应返回第一个真实 debug section 数据");
+    expect_true(object.missing_required_debug_sections().empty(),
+                "TI-COFF 必需 debug section 检查不应受保留空段影响");
+
+    bool rejected_reserved_section = false;
+    try {
+      (void)object.read_section_data(0U);
+    } catch (const std::exception&) {
+      rejected_reserved_section = true;
+    }
+    expect_true(rejected_reserved_section, "TI-COFF 读取 0 号保留空段应返回受控错误");
+  } catch (...) {
+    std::filesystem::remove(path, remove_error);
+    throw;
+  }
+  std::filesystem::remove(path, remove_error);
 }
 
 void verify_elf_symbol_table_endian_matrix() {
@@ -3179,6 +3297,7 @@ int main() {
     verify_copy_address_formatting();
     verify_window_title_formatting();
     verify_utf8_path_helpers();
+    verify_ti_coff_object_section_indices();
     verify_elf_symbol_table_endian_matrix();
     verify_elf_symbol_table_metadata();
     verify_c2000_elf_metadata();
