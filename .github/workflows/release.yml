@@ -36,13 +36,33 @@ jobs:
           -A x64
           -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build Release Targets
+      - name: Build Release Executables
         shell: pwsh
-        run: cmake --build build --config Release
+        run: >
+          cmake --build build --config Release
+          --target elf-static-view elf-static-view-cli
+
+      - name: Build Test Binaries
+        shell: pwsh
+        run: >
+          cmake --build build --config Release
+          --target elf_static_view_tests elf_static_view_perf_tests
 
       - name: Run Tests
         shell: pwsh
-        run: ctest --test-dir build --build-config Release --output-on-failure
+        run: |
+          $testBinaries = @(
+            (Join-Path $PWD "build\tests\Release\elf_static_view_tests.exe"),
+            (Join-Path $PWD "build\tests\Release\elf_static_view_perf_tests.exe")
+          )
+
+          foreach ($testBinary in $testBinaries) {
+            if (-not (Test-Path $testBinary)) {
+              throw "缺少测试可执行文件：$testBinary"
+            }
+          }
+
+          ctest --test-dir build --build-config Release --output-on-failure
 
       - name: Collect Release Executables
         shell: pwsh
