@@ -317,10 +317,11 @@ using Sig8Map = std::unordered_map<std::string, Dwarf_Off>;
 DwarfError::DwarfError(const std::string& message) : std::runtime_error(message) {}
 
 Dwarf_Debug DebugHandle::open_debug(const std::string& file_path,
+                                    const ObjectFileKind file_kind,
                                     const unsigned int group_number,
                                     const char* prefix) {
-  if (!is_elf_file(file_path)) {
-    if (is_ti_c2000_coff_file(file_path)) {
+  if (file_kind != ObjectFileKind::Elf) {
+    if (file_kind == ObjectFileKind::TiCoff) {
       throw DwarfError("TI-COFF 对象需要通过 dwarf_object_init_b 打开");
     }
     throw DwarfError("不支持的对象格式: 仅支持 ELF/EABI 与 TI C2000 COFF v2 executable .out");
@@ -357,7 +358,8 @@ std::optional<std::filesystem::path> DebugHandle::detect_debug_sup_path(
   const std::string& file_path) {
   Dwarf_Debug primary_debug = nullptr;
   try {
-    primary_debug = open_debug(file_path, DW_GROUPNUMBER_ANY, "dwarf_init_path(primary) failed");
+    primary_debug =
+      open_debug(file_path, ObjectFileKind::Elf, DW_GROUPNUMBER_ANY, "dwarf_init_path(primary) failed");
 
     Dwarf_Half version = 0;
     Dwarf_Small is_supplementary = 0;
@@ -437,9 +439,13 @@ void DebugHandle::tie_debug_handles(Dwarf_Debug primary_debug,
   throw DwarfError(message);
 }
 
-DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
-  if (!is_elf_file(file_path)) {
-    if (!is_ti_c2000_coff_file(file_path)) {
+DebugHandle::DebugHandle(const std::string& file_path)
+  : DebugHandle(file_path, detect_object_file_kind(file_path)) {}
+
+DebugHandle::DebugHandle(const std::string& file_path, const ObjectFileKind file_kind)
+  : file_path_(file_path) {
+  if (file_kind != ObjectFileKind::Elf) {
+    if (file_kind != ObjectFileKind::TiCoff) {
       throw DwarfError("不支持的对象格式: 仅支持 ELF/EABI 与 TI C2000 COFF v2 executable .out");
     }
 
@@ -474,8 +480,11 @@ DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
   // 2. 主对象里的 .debug_sup -> 同目录 supplementary object
   // 3. 主对象里的 .gnu_debugaltlink -> 同目录 alternate object
   if (const auto split_dwarf_path = detect_split_dwarf_path(file_path); split_dwarf_path.has_value()) {
-    tied_debug_ = open_debug(file_path, DW_GROUPNUMBER_BASE, "dwarf_init_path(base) failed");
-    debug_ = open_debug(split_dwarf_path->string(), DW_GROUPNUMBER_DWO, "dwarf_init_path(dwo) failed");
+    tied_debug_ = open_debug(file_path, file_kind, DW_GROUPNUMBER_BASE, "dwarf_init_path(base) failed");
+    debug_ = open_debug(split_dwarf_path->string(),
+                        ObjectFileKind::Elf,
+                        DW_GROUPNUMBER_DWO,
+                        "dwarf_init_path(dwo) failed");
     try {
       tie_debug_handles(debug_, tied_debug_, "dwarf_set_tied_dbg(dwo) failed");
       return;
@@ -492,10 +501,11 @@ DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
     }
   }
 
-  debug_ = open_debug(file_path, DW_GROUPNUMBER_ANY, "dwarf_init_path failed");
+  debug_ = open_debug(file_path, file_kind, DW_GROUPNUMBER_ANY, "dwarf_init_path failed");
   if (const auto debug_alt_path = detect_gnu_debugaltlink_path(file_path); debug_alt_path.has_value()) {
     try {
       tied_debug_ = open_debug(debug_alt_path->string(),
+                               ObjectFileKind::Elf,
                                DW_GROUPNUMBER_ANY,
                                "dwarf_init_path(gnu_debugaltlink sidecar) failed");
       tie_debug_handles(debug_, tied_debug_, "dwarf_set_tied_dbg(gnu_debugaltlink) failed");
@@ -511,6 +521,7 @@ DebugHandle::DebugHandle(const std::string& file_path) : file_path_(file_path) {
   if (const auto debug_sup_path = detect_debug_sup_path(file_path); debug_sup_path.has_value()) {
     try {
       tied_debug_ = open_debug(debug_sup_path->string(),
+                               ObjectFileKind::Elf,
                                DW_GROUPNUMBER_ANY,
                                "dwarf_init_path(debug_sup sidecar) failed");
       tie_debug_handles(debug_, tied_debug_, "dwarf_set_tied_dbg(debug_sup) failed");

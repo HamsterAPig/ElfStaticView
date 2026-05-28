@@ -277,7 +277,7 @@ void import_snapshot_from_dialog(AppState& state) {
 }
 
 void export_snapshot_from_dialog(AppState& state) {
-  if (!state.project_model.has_value()) {
+  if (!state.project_model) {
     log_error(state, "当前没有可导出的模型");
     return;
   }
@@ -545,7 +545,7 @@ void render_variables_panel(AppState& state) {
     ImGui::Separator();
   }
 
-  if (!state.project_model.has_value()) {
+  if (!state.project_model) {
     ImGui::TextUnformatted("拖拽 ELF 或 JSON 文件到窗口，或者使用“文件”菜单打开。");
     ImGui::End();
     return;
@@ -572,7 +572,7 @@ void render_inspector_panel(AppState& state) {
     ImGui::End();
     return;
   }
-  if (state.project_model.has_value()) {
+  if (state.project_model) {
     const auto& elf_info = state.project_model->elf_info;
     const auto& metrics = state.project_model->metrics;
     ImGui::TextUnformatted("ELF 信息");

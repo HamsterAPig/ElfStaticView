@@ -32,6 +32,18 @@ std::string to_lower_copy(std::string value) {
   return value;
 }
 
+struct PreparedNodeText {
+  std::string lowered_path;
+  std::string lowered_display_name;
+};
+
+[[nodiscard]] PreparedNodeText prepare_node_text(const ExpandedNode& node) {
+  return PreparedNodeText {
+    .lowered_path = to_lower_copy(node.path),
+    .lowered_display_name = to_lower_copy(node.display_name),
+  };
+}
+
 [[nodiscard]] bool can_single_star_consume(const std::string_view value,
                                            const std::size_t from,
                                            const std::size_t to) {
@@ -79,22 +91,19 @@ std::string to_lower_copy(std::string value) {
   return pattern_index == pattern.size();
 }
 
-bool matches_name_query(const FilterState& state, const ExpandedNode& node) {
+bool matches_name_query(const FilterState& state, const PreparedNodeText& prepared) {
   if (state.lowered_name_query.empty()) {
     return true;
   }
-  const auto lowered_name = to_lower_copy(node.display_name);
-  const auto lowered_path = to_lower_copy(node.path);
-  return lowered_name.find(state.lowered_name_query) != std::string::npos ||
-         lowered_path.find(state.lowered_name_query) != std::string::npos;
+  return prepared.lowered_display_name.find(state.lowered_name_query) != std::string::npos ||
+         prepared.lowered_path.find(state.lowered_name_query) != std::string::npos;
 }
 
-bool matches_path_rules(const FilterState& state, const ExpandedNode& node) {
+bool matches_path_rules(const FilterState& state, const std::string_view lowered_path) {
   if (state.rules.empty()) {
     return true;
   }
 
-  const auto lowered_path = to_lower_copy(node.path);
   bool has_include_rule = false;
   bool included = false;
   for (const auto& rule : state.rules) {
@@ -119,6 +128,22 @@ bool matches_path_rules(const FilterState& state, const ExpandedNode& node) {
     }
   }
   return true;
+}
+
+[[nodiscard]] bool matches_filter_state(const FilterState& state,
+                                        const ExpandedNode& node,
+                                        const PreparedNodeText& prepared) {
+  if (state.compile_error.has_value()) {
+    return false;
+  }
+  if (state.form.only_static_known && node.availability != Availability::StaticAddressKnown) {
+    return false;
+  }
+  if (!state.form.include_runtime_only &&
+      (node.availability == Availability::RuntimeOnly || node.availability == Availability::OptimizedOut)) {
+    return false;
+  }
+  return matches_name_query(state, prepared) && matches_path_rules(state, prepared.lowered_path);
 }
 
 [[nodiscard]] bool filter_rule_set_equal(const FilterRuleSet& left, const FilterRuleSet& right) {
@@ -176,10 +201,8 @@ void collect_visible_paths(FilterState& filter_state,
                            FilterCache& cache,
                            const ExpandedNode& node,
                            const analysis::Expander* expander) {
-  if (matches_name_query(filter_state, node) && matches_path_rules(filter_state, node) &&
-      (!filter_state.form.only_static_known || node.availability == Availability::StaticAddressKnown) &&
-      (filter_state.form.include_runtime_only ||
-       (node.availability != Availability::RuntimeOnly && node.availability != Availability::OptimizedOut))) {
+  const PreparedNodeText prepared = prepare_node_text(node);
+  if (matches_filter_state(filter_state, node, prepared)) {
     remember_visible_path_and_ancestors(cache, node.path);
   }
 
@@ -263,7 +286,7 @@ void apply_filter_build_result(AppState& state, FilterBuildResult result) {
   state.filters.rules = std::move(result.rules);
   state.filters.compile_error = std::move(result.compile_error);
   state.filters.cache = std::move(result.cache);
-  state.filters.cache.model = state.project_model.has_value() ? &state.project_model.value() : nullptr;
+  state.filters.cache.model = state.project_model.get();
   state.filters.cache.rebuild_count = previous_rebuild_count + 1;
   state.filters.applied_form = state.filters.cache.signature;
   state.filters.building = false;
@@ -305,22 +328,13 @@ bool should_show_filter_progress(const AppState& state) {
 }
 
 bool matches_filters(const AppState& state, const ExpandedNode& node) {
-  if (state.filters.compile_error.has_value()) {
-    return false;
-  }
-  if (state.filters.form.only_static_known && node.availability != Availability::StaticAddressKnown) {
-    return false;
-  }
-  if (!state.filters.form.include_runtime_only &&
-      (node.availability == Availability::RuntimeOnly || node.availability == Availability::OptimizedOut)) {
-    return false;
-  }
-  return matches_name_query(state.filters, node) && matches_path_rules(state.filters, node);
+  const PreparedNodeText prepared = prepare_node_text(node);
+  return matches_filter_state(state.filters, node, prepared);
 }
 
 void rebuild_filter_cache(AppState& state) {
   auto& cache = state.filters.cache;
-  const ProjectModel* model = state.project_model.has_value() ? &state.project_model.value() : nullptr;
+  const ProjectModel* model = state.project_model.get();
   if (cache.valid && cache.model == model &&
       cache.expand_depth == state.load_policy.expand_depth &&
       cache.lazy_expand_children == state.load_policy.lazy_expand_children &&

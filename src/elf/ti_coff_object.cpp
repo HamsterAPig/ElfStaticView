@@ -18,6 +18,7 @@ constexpr std::uint16_t kTiC2000CoffMagic = 0x00c2;
 constexpr std::size_t kFileHeaderSize = 22;
 constexpr std::size_t kSectionHeaderSize = 48;
 constexpr std::size_t kSymbolRecordSize = 18;
+constexpr std::size_t kObjectKindProbeSize = 4;
 
 [[nodiscard]] std::uint16_t read_u16_le(const std::vector<std::uint8_t>& data,
                                         const std::size_t offset) {
@@ -57,6 +58,25 @@ constexpr std::size_t kSymbolRecordSize = 18;
       throw DwarfError("读取对象文件失败: " + file_path);
     }
   }
+  return data;
+}
+
+[[nodiscard]] std::vector<std::uint8_t> read_file_header_bytes(const std::string& file_path,
+                                                               const std::size_t size) {
+  std::ifstream stream(platform::utf8_path(file_path), std::ios::binary);
+  if (!stream) {
+    throw DwarfError("无法打开对象文件: " + file_path);
+  }
+  std::vector<std::uint8_t> data(size);
+  stream.read(reinterpret_cast<char*>(data.data()), static_cast<std::streamsize>(size));
+  const auto bytes_read = stream.gcount();
+  if (bytes_read < 0) {
+    throw DwarfError("读取对象文件头失败: " + file_path);
+  }
+  if (!stream.good() && !stream.eof()) {
+    throw DwarfError("读取对象文件头失败: " + file_path);
+  }
+  data.resize(static_cast<std::size_t>(bytes_read));
   return data;
 }
 
@@ -313,14 +333,27 @@ std::vector<std::string> TiCoffObject::missing_required_debug_sections() const {
 }
 
 bool is_ti_c2000_coff_file(const std::string& file_path) {
-  const auto data = read_file_bytes(file_path);
-  return data.size() >= 2 && read_u16_le(data, 0) == kTiC2000CoffMagic;
+  return detect_object_file_kind(file_path) == ObjectFileKind::TiCoff;
 }
 
 bool is_elf_file(const std::string& file_path) {
-  const auto data = read_file_bytes(file_path);
-  return data.size() >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' &&
-         data[3] == 'F';
+  return detect_object_file_kind(file_path) == ObjectFileKind::Elf;
+}
+
+ObjectFileKind detect_object_file_kind(const std::string& file_path) {
+  // 只读取极小文件头做判型，避免格式探测阶段重复整文件 I/O。
+  const auto data = read_file_header_bytes(file_path, kObjectKindProbeSize);
+  if (data.size() >= 4 && data[0] == 0x7f && data[1] == 'E' && data[2] == 'L' && data[3] == 'F') {
+    return ObjectFileKind::Elf;
+  }
+  if (data.size() >= 2) {
+    const auto magic = static_cast<std::uint16_t>(data[0]) |
+                       (static_cast<std::uint16_t>(data[1]) << 8U);
+    if (magic == kTiC2000CoffMagic) {
+      return ObjectFileKind::TiCoff;
+    }
+  }
+  return ObjectFileKind::Unknown;
 }
 
 Dwarf_Obj_Access_Interface_a make_ti_coff_dwarf_access(TiCoffObject& object) {

@@ -9,6 +9,7 @@
 #include <chrono>
 #include <exception>
 #include <sstream>
+#include <unordered_map>
 
 namespace elf_static_view {
 
@@ -237,28 +238,30 @@ std::string render_scan_text(const ProjectModel& model) {
 
 namespace {
 
-[[nodiscard]] const VariableRecord* find_symbol_by_path(const ProjectModel& model,
-                                                        const std::string& path) {
+using SymbolPathIndex = std::unordered_map<std::string, const VariableRecord*>;
+
+[[nodiscard]] SymbolPathIndex build_symbol_path_index(const ProjectModel& model) {
+  SymbolPathIndex index;
+  index.reserve(model.symbols.size());
   for (const auto& symbol : model.symbols) {
-    if (analysis::join_scope(symbol.scope_path, symbol.name) == path) {
-      return &symbol;
-    }
+    index.emplace(analysis::join_scope(symbol.scope_path, symbol.name), &symbol);
   }
-  return nullptr;
+  return index;
 }
 
 void render_expanded_text(const ExpandedNode& node,
                           const int level,
                           const std::optional<std::int64_t> address_bias,
-                          const ProjectModel& model,
+                          const SymbolPathIndex& symbol_index,
                           std::ostringstream& stream) {
   for (int i = 0; i < level; ++i) {
     stream << "  ";
   }
   stream << "- " << node.path << " [" << to_string(node.availability) << "] "
          << node.type_name;
-  if (const auto* symbol = find_symbol_by_path(model, node.path);
-      symbol != nullptr && !symbol->address.location_ranges.empty()) {
+  const auto symbol_iter = symbol_index.find(node.path);
+  const VariableRecord* symbol = symbol_iter != symbol_index.end() ? symbol_iter->second : nullptr;
+  if (symbol != nullptr && !symbol->address.location_ranges.empty()) {
     append_location_range_suffix(stream, symbol->address);
   }
   if (node.absolute_address.has_value()) {
@@ -268,16 +271,14 @@ void render_expanded_text(const ExpandedNode& node,
       stream << " @0x" << std::hex << node.absolute_address.value() << std::dec;
     }
   }
-  if (const auto* symbol = find_symbol_by_path(model, node.path);
-      symbol != nullptr && symbol->const_value.has_value()) {
+  if (symbol != nullptr && symbol->const_value.has_value()) {
     stream << " = " << symbol->const_value.value();
-  } else if (const auto* symbol = find_symbol_by_path(model, node.path);
-             symbol != nullptr && symbol->const_value_text.has_value()) {
+  } else if (symbol != nullptr && symbol->const_value_text.has_value()) {
     stream << " = " << symbol->const_value_text.value();
   }
   stream << '\n';
   for (const auto& child : node.children) {
-    render_expanded_text(child, level + 1, address_bias, model, stream);
+    render_expanded_text(child, level + 1, address_bias, symbol_index, stream);
   }
 }
 
@@ -286,8 +287,10 @@ std::string render_dump_text_with_bias(const ProjectModel& model,
   std::ostringstream stream;
   stream << "file: " << model.file << '\n';
   append_elf_info_lines(stream, model);
+  // 文本导出按 path 建索引，避免每个节点都线性扫描全部符号。
+  const SymbolPathIndex symbol_index = build_symbol_path_index(model);
   for (const auto& node : model.expanded) {
-    render_expanded_text(node, 0, address_bias, model, stream);
+    render_expanded_text(node, 0, address_bias, symbol_index, stream);
   }
   return stream.str();
 }

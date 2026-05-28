@@ -9,6 +9,12 @@
 
 namespace elf_static_view::elf {
 
+enum class ObjectFileKind {
+  Unknown,
+  Elf,
+  TiCoff,
+};
+
 struct TiCoffSection {
   std::string name;
   std::uint32_t physical_address = 0;
@@ -43,6 +49,7 @@ private:
 
 [[nodiscard]] bool is_ti_c2000_coff_file(const std::string& file_path);
 [[nodiscard]] bool is_elf_file(const std::string& file_path);
+[[nodiscard]] ObjectFileKind detect_object_file_kind(const std::string& file_path);
 [[nodiscard]] Dwarf_Obj_Access_Interface_a make_ti_coff_dwarf_access(TiCoffObject& object);
 
 }  // namespace elf_static_view::elf
