@@ -46,14 +46,15 @@ jobs:
         shell: pwsh
         run: >
           cmake --build build --config Release
-          --target elf_static_view_tests elf_static_view_perf_tests
+          --target elf_static_view_tests elf_static_view_perf_tests elf_static_view_static_address_query_tests
 
       - name: Run Tests
         shell: pwsh
         run: |
           $testBinaries = @(
             (Join-Path $PWD "build\tests\Release\elf_static_view_tests.exe"),
-            (Join-Path $PWD "build\tests\Release\elf_static_view_perf_tests.exe")
+            (Join-Path $PWD "build\tests\Release\elf_static_view_perf_tests.exe"),
+            (Join-Path $PWD "build\tests\Release\elf_static_view_static_address_query_tests.exe")
           )
 
           foreach ($testBinary in $testBinaries) {

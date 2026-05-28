@@ -240,7 +240,7 @@ const ExpandedNode* resolve_selected_node(const AppState& state) {
   if (state.selected_node != nullptr) {
     return state.selected_node;
   }
-  if (state.selected_node_path.empty() || !state.project_model.has_value()) {
+  if (state.selected_node_path.empty() || !state.project_model) {
     return nullptr;
   }
   for (const auto& node : state.project_model->expanded) {
@@ -335,7 +335,7 @@ void set_loaded_snapshot(AppState& state, ProjectSnapshot snapshot, const std::s
   state.loaded_kind = LoadedContentKind::Snapshot;
   state.current_snapshot_path = snapshot_path;
   state.current_file_path = snapshot.source_file;
-  state.project_model = snapshot.model;
+  state.project_model = std::move(snapshot.model);
   state.filters.cache.valid = false;
   state.filters.has_pending_form = true;
   state.filters.last_input_at = std::chrono::steady_clock::now() -
@@ -483,12 +483,12 @@ bool fail_ui_task(UiTaskState& task, const std::uint64_t task_id, const std::str
 }
 
 std::optional<ProjectSnapshot> build_snapshot(const AppState& state) {
-  if (!state.project_model.has_value()) {
+  if (!state.project_model) {
     return std::nullopt;
   }
   ProjectSnapshot snapshot;
   snapshot.source_file = infer_source_file(state);
-  snapshot.model = state.project_model.value();
+  snapshot.model = *state.project_model;
   if (state.snapshot.has_value()) {
     snapshot.schema_version = state.snapshot->schema_version;
     snapshot.source_kind = state.snapshot->source_kind;

@@ -21,6 +21,11 @@ struct PathRule {
   bool exclude = false;
 };
 
+struct PreparedNodeText {
+  std::string lowered_path;
+  std::string lowered_display_name;
+};
+
 struct QuerySignature {
   std::string name_query_text;
   std::string path_rules_text;
@@ -56,6 +61,13 @@ struct QuerySignature {
     lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(ch))));
   }
   return lowered;
+}
+
+[[nodiscard]] PreparedNodeText prepare_node_text(const ExpandedNode& node) {
+  return PreparedNodeText {
+    .lowered_path = to_lower_copy(node.path),
+    .lowered_display_name = to_lower_copy(node.display_name),
+  };
 }
 
 [[nodiscard]] std::vector<std::string> split_name_query_tokens(const std::string& name_query_text) {
@@ -158,12 +170,12 @@ struct QuerySignature {
   return text_index == text.size();
 }
 
-[[nodiscard]] bool matches_path_rules(const std::vector<PathRule>& rules, const std::string& path) {
+[[nodiscard]] bool matches_path_rules(const std::vector<PathRule>& rules,
+                                      const std::string& lowered_path) {
   if (rules.empty()) {
     return true;
   }
 
-  const auto lowered_path = to_lower_copy(path);
   bool matched_include = false;
   bool has_include = false;
   for (const auto& rule : rules) {
@@ -185,15 +197,13 @@ struct QuerySignature {
 }
 
 [[nodiscard]] bool matches_name_tokens(const std::vector<std::string>& tokens,
-                                       const ExpandedNode& node) {
+                                       const PreparedNodeText& prepared) {
   if (tokens.empty()) {
     return true;
   }
-  const auto lowered_name = to_lower_copy(node.display_name);
-  const auto lowered_path = to_lower_copy(node.path);
   return std::any_of(tokens.begin(), tokens.end(), [&](const std::string& token) {
-    return lowered_name.find(token) != std::string::npos ||
-           lowered_path.find(token) != std::string::npos;
+    return prepared.lowered_display_name.find(token) != std::string::npos ||
+           prepared.lowered_path.find(token) != std::string::npos;
   });
 }
 
@@ -305,10 +315,11 @@ StaticAddressQuerySession::query(const StaticAddressQueryOptions& options) {
   std::vector<StaticAddressResult> results;
   results.reserve(flattened_nodes.size());
   for (const auto& node : flattened_nodes) {
-    if (!matches_name_tokens(impl_->name_tokens, node)) {
+    const PreparedNodeText prepared = prepare_node_text(node);
+    if (!matches_name_tokens(impl_->name_tokens, prepared)) {
       continue;
     }
-    if (!matches_path_rules(impl_->path_rules, node.path)) {
+    if (!matches_path_rules(impl_->path_rules, prepared.lowered_path)) {
       continue;
     }
     if (!should_emit_node(node, options)) {

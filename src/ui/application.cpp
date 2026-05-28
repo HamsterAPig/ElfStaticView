@@ -495,10 +495,8 @@ void Application::start_filter_build() {
   const FilterRuleSet rules = state_.filters.form;
   const std::size_t expand_depth = state_.load_policy.expand_depth;
   const bool lazy_expand_children = state_.load_policy.lazy_expand_children;
-  std::shared_ptr<const ProjectModel> model_snapshot;
-  if (state_.project_model.has_value()) {
-    model_snapshot = std::make_shared<ProjectModel>(state_.project_model.value());
-  }
+  // 筛选后台任务只共享当前只读模型，避免每次输入都深拷贝整棵项目树。
+  const std::shared_ptr<const ProjectModel> model_snapshot = state_.project_model.share_readonly();
 
   state_.filters.has_pending_form = false;
   state_.filters.applied_form = rules;

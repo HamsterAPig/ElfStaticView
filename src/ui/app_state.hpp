@@ -3,13 +3,14 @@
 #include "elf_static_view/project.hpp"
 
 #include <chrono>
-#include <filesystem>
 #include <cstdint>
-#include <optional>
+#include <filesystem>
 #include <future>
-#include <unordered_set>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace elf_static_view::ui {
@@ -54,6 +55,69 @@ struct FilterBuildResult {
 struct FilterTask {
   std::uint64_t task_id = 0;
   std::future<FilterBuildResult> future;
+};
+
+struct SharedProjectModel {
+  std::shared_ptr<ProjectModel> storage;
+
+  [[nodiscard]] bool has_value() const noexcept {
+    return storage != nullptr;
+  }
+
+  explicit operator bool() const noexcept {
+    return has_value();
+  }
+
+  [[nodiscard]] ProjectModel* get() noexcept {
+    return storage.get();
+  }
+
+  [[nodiscard]] const ProjectModel* get() const noexcept {
+    return storage.get();
+  }
+
+  [[nodiscard]] ProjectModel& value() {
+    if (!storage) {
+      throw std::bad_optional_access();
+    }
+    return *storage;
+  }
+
+  [[nodiscard]] const ProjectModel& value() const {
+    if (!storage) {
+      throw std::bad_optional_access();
+    }
+    return *storage;
+  }
+
+  [[nodiscard]] ProjectModel& operator*() {
+    return value();
+  }
+
+  [[nodiscard]] const ProjectModel& operator*() const {
+    return value();
+  }
+
+  [[nodiscard]] ProjectModel* operator->() noexcept {
+    return storage.get();
+  }
+
+  [[nodiscard]] const ProjectModel* operator->() const noexcept {
+    return storage.get();
+  }
+
+  SharedProjectModel& operator=(ProjectModel model) {
+    storage = std::make_shared<ProjectModel>(std::move(model));
+    return *this;
+  }
+
+  void reset() noexcept {
+    storage.reset();
+  }
+
+  [[nodiscard]] std::shared_ptr<const ProjectModel> share_readonly() const noexcept {
+    return storage;
+  }
 };
 
 struct FilterState {
@@ -135,7 +199,7 @@ struct AppState {
   LoadedContentKind loaded_kind = LoadedContentKind::None;
   std::string current_file_path;
   std::string current_snapshot_path;
-  std::optional<ProjectModel> project_model;
+  SharedProjectModel project_model;
   std::optional<ProjectSnapshot> snapshot;
   const ExpandedNode* selected_node = nullptr;
   std::string selected_node_path;

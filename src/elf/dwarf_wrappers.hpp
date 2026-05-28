@@ -13,6 +13,7 @@
 
 namespace elf_static_view::elf {
 
+enum class ObjectFileKind;
 class TiCoffObject;
 
 class DwarfError : public std::runtime_error {
@@ -23,6 +24,7 @@ public:
 class DebugHandle {
 public:
   explicit DebugHandle(const std::string& file_path);
+  DebugHandle(const std::string& file_path, ObjectFileKind file_kind);
   ~DebugHandle();
 
   DebugHandle(const DebugHandle&) = delete;
@@ -38,6 +40,7 @@ private:
   };
 
   [[nodiscard]] static Dwarf_Debug open_debug(const std::string& file_path,
+                                              ObjectFileKind file_kind,
                                               unsigned int group_number,
                                               const char* prefix);
   [[nodiscard]] static std::optional<std::filesystem::path> detect_split_dwarf_path(

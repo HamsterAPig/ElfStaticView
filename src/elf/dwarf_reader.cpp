@@ -1935,7 +1935,8 @@ void walk_die_tree(ReaderContext& context, Dwarf_Die die, const bool is_info) {
 
 ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& load_policy) const {
   const auto dwarf_load_started_at = std::chrono::steady_clock::now();
-  DebugHandle debug(file_path);
+  const ObjectFileKind file_kind = detect_object_file_kind(file_path);
+  DebugHandle debug(file_path, file_kind);
   ReaderContext context;
   context.debug = debug.get();
   context.file_path = file_path;
@@ -2054,7 +2055,7 @@ ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& l
   model.metrics.variable_count_before_filter = context.variables.size();
   model.symbols = std::move(context.variables);
   const auto symbol_table_started_at = std::chrono::steady_clock::now();
-  if (is_elf_file(file_path)) {
+  if (file_kind == ObjectFileKind::Elf) {
     const auto symbol_table = ElfSymbolTable::load(file_path);
     model.metrics.symbol_table_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -2066,7 +2067,7 @@ ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& l
                                   .os_abi = symbol_table.metadata().os_abi};
     // DWARF 位置表达式不总能直接给出静态绝对地址，这里再用 ELF 符号表补一遍静态对象地址。
     apply_symbol_addresses(symbol_table, model.symbols);
-  } else if (is_ti_c2000_coff_file(file_path)) {
+  } else if (file_kind == ObjectFileKind::TiCoff) {
     model.metrics.symbol_table_ms = 0;
     model.elf_info = ElfFileInfo {.object_class = "TI-COFF",
                                   .byte_order = "Little endian",
