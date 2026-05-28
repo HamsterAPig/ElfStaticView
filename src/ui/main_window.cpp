@@ -12,7 +12,6 @@
 #include <misc/cpp/imgui_stdlib.h>
 
 #include <cstdint>
-#include <limits>
 #include <stdexcept>
 
 namespace elf_static_view::ui {
@@ -133,30 +132,12 @@ void save_app_config_or_log(AppState& state) {
   }
 }
 
-std::optional<std::string> format_selected_address_minus_bias(const AppState& state) {
+std::optional<std::string> format_selected_adjusted_address(const AppState& state) {
   const auto* selected_node = resolve_selected_node(state);
   if (selected_node == nullptr) {
     return std::nullopt;
   }
-  if (!selected_node->absolute_address.has_value()) {
-    return std::nullopt;
-  }
-
-  const auto absolute_address = selected_node->absolute_address.value();
-  if (state.address_bias < 0) {
-    const auto magnitude = static_cast<std::uint64_t>(-(state.address_bias + 1)) + 1U;
-    if (absolute_address > std::numeric_limits<std::uint64_t>::max() - magnitude) {
-      return std::nullopt;
-    }
-  } else if (absolute_address < static_cast<std::uint64_t>(state.address_bias)) {
-    return std::nullopt;
-  }
-
-  const std::uint64_t adjusted =
-    state.address_bias < 0
-      ? absolute_address + (static_cast<std::uint64_t>(-(state.address_bias + 1)) + 1U)
-      : absolute_address - static_cast<std::uint64_t>(state.address_bias);
-  return format_address_for_copy(adjusted, state);
+  return format_adjusted_address_for_copy(*selected_node, state);
 }
 
 std::optional<std::string> format_selected_raw_address(const AppState& state) {
@@ -167,14 +148,14 @@ std::optional<std::string> format_selected_raw_address(const AppState& state) {
   return format_address_for_copy(selected_node->absolute_address.value(), state);
 }
 
-void copy_selected_address_minus_bias(AppState& state) {
-  const auto address = format_selected_address_minus_bias(state);
+void copy_selected_adjusted_address(AppState& state) {
+  const auto address = format_selected_adjusted_address(state);
   if (!address.has_value()) {
-    log_error(state, "当前变量没有可复制的地址减偏移结果");
+    log_error(state, "当前变量没有可复制的偏移后地址");
     return;
   }
   ImGui::SetClipboardText(address->c_str());
-  log_info(state, "已复制当前变量地址减偏移结果: " + address.value());
+  log_info(state, "已复制当前变量偏移后地址: " + address.value());
 }
 
 void copy_selected_raw_address(AppState& state) {
@@ -197,7 +178,7 @@ void handle_global_shortcuts(AppState& state) {
   }
   if (!io.WantTextInput &&
       ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_C, ImGuiInputFlags_RouteGlobal)) {
-    copy_selected_address_minus_bias(state);
+    copy_selected_adjusted_address(state);
   }
   if (!io.WantTextInput &&
       ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_B, ImGuiInputFlags_RouteGlobal)) {
@@ -241,12 +222,11 @@ void render_tree_node(AppState& state, const ExpandedNode& node) {
     if (node.absolute_address.has_value() && ImGui::MenuItem("复制原始地址")) {
       copy_selected_raw_address(state);
     }
-    if (const auto adjusted = elf_static_view::apply_bias_to_absolute(node, state.address_bias);
-        adjusted.has_value()) {
+    if (const auto copied_text = format_adjusted_address_for_copy(node, state);
+        copied_text.has_value()) {
       if (ImGui::MenuItem("复制偏移后地址")) {
-        const std::string copied_text = format_address_for_copy(adjusted.value(), state);
-        ImGui::SetClipboardText(copied_text.c_str());
-        log_info(state, "已复制当前变量偏移后地址: " + copied_text);
+        ImGui::SetClipboardText(copied_text->c_str());
+        log_info(state, "已复制当前变量偏移后地址: " + copied_text.value());
       }
     }
     if (node.relative_offset.has_value()) {
@@ -758,7 +738,7 @@ void render_shortcuts_dialog(AppState& state) {
     ImGui::TextUnformatted("快捷键说明");
     ImGui::Separator();
     ImGui::BulletText("Ctrl+F: 聚焦变量名搜索框");
-    ImGui::BulletText("Ctrl+C: 复制当前变量地址减去地址偏移后的结果");
+    ImGui::BulletText("Ctrl+C: 复制当前变量的偏移后地址");
     ImGui::BulletText("Ctrl+B: 复制当前变量的原始地址值");
     ImGui::BulletText("F1: 打开快捷键帮助");
     ImGui::BulletText("Esc: 清理当前输入焦点");
