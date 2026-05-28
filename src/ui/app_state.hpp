@@ -191,6 +191,8 @@ void log_error(AppState& state, const std::string& message);
 void clear_selection(AppState& state);
 [[nodiscard]] const ExpandedNode* resolve_selected_node(const AppState& state);
 [[nodiscard]] std::string format_address_for_copy(std::uint64_t value, const AppState& state);
+[[nodiscard]] std::optional<std::string> format_adjusted_address_for_copy(const ExpandedNode& node,
+                                                                          const AppState& state);
 [[nodiscard]] std::string build_window_title(const AppState& state);
 void set_loaded_project(AppState& state,
                         ProjectModel model,

@@ -1,5 +1,6 @@
 #include "ui/app_state.hpp"
 
+#include "analysis/address_bias.hpp"
 #include "ui/version_check.hpp"
 
 #include <algorithm>
@@ -271,6 +272,16 @@ std::string format_address_for_copy(const std::uint64_t value, const AppState& s
       return format_binary(value);
   }
   return {};
+}
+
+std::optional<std::string> format_adjusted_address_for_copy(const ExpandedNode& node,
+                                                            const AppState& state) {
+  // 复制逻辑必须和树/详情面板共用同一套偏移规则，避免展示和剪贴板结果漂移。
+  const auto adjusted = elf_static_view::apply_bias_to_absolute(node, state.address_bias);
+  if (!adjusted.has_value()) {
+    return std::nullopt;
+  }
+  return format_address_for_copy(adjusted.value(), state);
 }
 
 std::string build_window_title(const AppState& state) {

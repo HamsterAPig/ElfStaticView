@@ -2332,6 +2332,40 @@ void verify_copy_address_formatting() {
   state.copy_address_base = elf_static_view::ui::CopyAddressBase::Bin;
   expect_true(elf_static_view::ui::format_address_for_copy(0x1234U, state) == "1001000110100",
               "二进制复制结果不正确");
+
+  const auto negative_bias_node = make_node("demo::negative_bias",
+                                            "negative_bias",
+                                            "int",
+                                            elf_static_view::Availability::StaticAddressKnown,
+                                            0x108055a3U,
+                                            std::nullopt);
+  state.copy_address_base = elf_static_view::ui::CopyAddressBase::Hex;
+  state.copy_hex_without_prefix = false;
+  state.address_bias = -0x10800000;
+  expect_true(elf_static_view::ui::format_adjusted_address_for_copy(negative_bias_node, state) ==
+                std::optional<std::string>("0x55a3"),
+              "负偏移复制结果应保留符号并与展示一致");
+
+  const auto positive_bias_node = make_node("demo::positive_bias",
+                                            "positive_bias",
+                                            "int",
+                                            elf_static_view::Availability::StaticAddressKnown,
+                                            0x55a3U,
+                                            std::nullopt);
+  state.address_bias = 0x20;
+  expect_true(elf_static_view::ui::format_adjusted_address_for_copy(positive_bias_node, state) ==
+                std::optional<std::string>("0x55c3"),
+              "正偏移复制结果应与展示一致");
+
+  const auto overflow_node = make_node("demo::overflow",
+                                       "overflow",
+                                       "int",
+                                       elf_static_view::Availability::StaticAddressKnown,
+                                       0x10U,
+                                       std::nullopt);
+  state.address_bias = -0x20;
+  expect_true(!elf_static_view::ui::format_adjusted_address_for_copy(overflow_node, state).has_value(),
+              "偏移后地址下溢时复制 helper 应返回空");
 }
 
 void verify_window_title_formatting() {
