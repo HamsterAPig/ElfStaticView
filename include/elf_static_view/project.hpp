@@ -2,7 +2,10 @@
 
 #include "elf_static_view/project_types.hpp"
 
+#include <cstddef>
+#include <memory>
 #include <string>
+#include <vector>
 
 namespace elf_static_view {
 
@@ -15,6 +18,26 @@ public:
   [[nodiscard]] ProjectModel dump(const std::string& file_path,
                                   const DumpOptions& options = {}) const;
   [[nodiscard]] std::string dump_raw_dwarf_json(const std::string& file_path) const;
+};
+
+class StaticAddressQuerySession {
+public:
+  explicit StaticAddressQuerySession(const ProjectModel& model);
+  ~StaticAddressQuerySession();
+  StaticAddressQuerySession(StaticAddressQuerySession&&) noexcept;
+  StaticAddressQuerySession& operator=(StaticAddressQuerySession&&) noexcept;
+  StaticAddressQuerySession(const StaticAddressQuerySession&) = delete;
+  StaticAddressQuerySession& operator=(const StaticAddressQuerySession&) = delete;
+
+  [[nodiscard]] std::vector<StaticAddressResult> query(
+      const StaticAddressQueryOptions& options = {});
+
+private:
+  struct Impl;
+
+  const ProjectModel* model_ = nullptr;
+  std::vector<ExpandedNode> expanded_nodes_;
+  std::unique_ptr<Impl> impl_;
 };
 
 [[nodiscard]] ProjectSummary summarize(const ProjectModel& model);
@@ -32,5 +55,12 @@ public:
 [[nodiscard]] ProjectSnapshot build_export_snapshot(
     const ProjectSnapshot& snapshot,
     const SnapshotExportOptions& options = {});
+[[nodiscard]] std::vector<StaticAddressResult> query_static_addresses(
+    const ProjectModel& model,
+    const StaticAddressQueryOptions& options = {});
+[[nodiscard]] std::vector<StaticAddressResult> query_static_addresses_from_file(
+    const std::string& elf_path,
+    const StaticAddressQueryOptions& options = {},
+    const LoadPolicy& load_policy = {});
 
 }  // namespace elf_static_view
