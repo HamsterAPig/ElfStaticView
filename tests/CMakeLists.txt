@@ -441,6 +441,11 @@ add_executable(
 )
 
 add_executable(
+  elf_static_view_static_address_query_tests
+  static_address_query_tests.cpp
+)
+
+add_executable(
   debug_sup_form_builder
   fixtures/helpers/debug_sup_form_builder.cpp
 )
@@ -491,13 +496,19 @@ target_link_libraries(
     elf_static_view_warnings
 )
 
+target_link_libraries(
+  elf_static_view_static_address_query_tests
+  PRIVATE
+    elf_static_view_core
+    elf_static_view_warnings
+)
+
 if(WIN32)
   target_link_libraries(elf_static_view_tests PRIVATE winhttp)
   target_link_libraries(elf_static_view_perf_tests PRIVATE winhttp)
 endif()
 
 add_dependencies(elf_static_view_perf_tests elf_static_view_version_header)
-
 add_dependencies(elf_static_view_tests static_vars_c.elf_fixture static_vars_cpp.elf_fixture)
 add_dependencies(elf_static_view_tests gnu_addr_index.elf_fixture)
 add_dependencies(elf_static_view_tests atomic_type.elf_fixture)
@@ -627,3 +638,4 @@ target_compile_definitions(
 
 add_test(NAME elf_static_view_tests COMMAND elf_static_view_tests)
 add_test(NAME elf_static_view_perf_tests COMMAND elf_static_view_perf_tests)
+add_test(NAME elf_static_view_static_address_query_tests COMMAND elf_static_view_static_address_query_tests)

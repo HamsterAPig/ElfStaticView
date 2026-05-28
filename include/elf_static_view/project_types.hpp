@@ -255,6 +255,20 @@ struct DumpOptions {
   LoadPolicy load_policy {};
 };
 
+struct StaticAddressQueryOptions {
+  std::string name_query_text;
+  std::string path_rules_text;
+  bool include_runtime_only = false;
+  bool only_static_known = true;
+  std::size_t max_array_elements = 1024;
+};
+
+struct StaticAddressResult {
+  std::string key;
+  std::uint64_t value = 0;
+  std::string value_type;
+};
+
 struct SnapshotExportOptions {
   bool include_sensitive_info = true;
 };
