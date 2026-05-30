@@ -1,0 +1,64 @@
+name: PR Tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Windows Release Tests
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Show Tool Versions
+        shell: pwsh
+        run: |
+          cmake --version
+          git --version
+          clang --version
+          gcc --version
+
+      - name: Configure CMake
+        shell: pwsh
+        run: >
+          cmake -S . -B build
+          -G "Visual Studio 17 2022"
+          -A x64
+          -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Test Binaries
+        shell: pwsh
+        run: >
+          cmake --build build --config Release
+          --target elf_static_view_tests elf_static_view_perf_tests elf_static_view_static_address_query_tests
+
+      - name: Run Tests
+        shell: pwsh
+        run: |
+          $testBinaries = @(
+            (Join-Path $PWD "build\tests\Release\elf_static_view_tests.exe"),
+            (Join-Path $PWD "build\tests\Release\elf_static_view_perf_tests.exe"),
+            (Join-Path $PWD "build\tests\Release\elf_static_view_static_address_query_tests.exe")
+          )
+
+          foreach ($testBinary in $testBinaries) {
+            if (-not (Test-Path $testBinary)) {
+              throw "缺少测试可执行文件：$testBinary"
+            }
+          }
+
+          ctest --test-dir build --build-config Release --output-on-failure
