@@ -4,6 +4,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace elf_static_view {
@@ -271,6 +272,48 @@ struct StaticAddressResult {
 
 struct SnapshotExportOptions {
   bool include_sensitive_info = true;
+};
+
+enum class ExportFormat {
+  JsonPretty,
+  JsonCompact,
+  BinaryPrivate,
+};
+
+enum class ExportSource {
+  FullModel,
+  CurrentFilteredView,
+};
+
+enum class ExportPayloadKind {
+  FullSnapshot,
+  VariableSummary,
+};
+
+struct ExportOptions {
+  ExportFormat format = ExportFormat::JsonPretty;
+  ExportSource source = ExportSource::FullModel;
+  ExportPayloadKind payload_kind = ExportPayloadKind::FullSnapshot;
+  bool include_sensitive_info = true;
+};
+
+struct LightweightVariableRecord {
+  std::string path;
+  std::string name;
+  std::string type_name;
+  std::optional<std::uint64_t> address;
+};
+
+struct LightweightExport {
+  std::uint64_t schema_version = 1;
+  ExportSource source = ExportSource::FullModel;
+  bool include_sensitive_info = true;
+  std::vector<LightweightVariableRecord> variables;
+};
+
+struct ExportDocument {
+  ExportPayloadKind payload_kind = ExportPayloadKind::FullSnapshot;
+  std::variant<ProjectSnapshot, LightweightExport> payload;
 };
 
 std::string to_string(AddressKind value);

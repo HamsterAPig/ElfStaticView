@@ -24,6 +24,7 @@ constexpr char kInspectorWindowName[] = "详情###Inspector";
 constexpr char kLogWindowName[] = "日志###Log";
 constexpr char kJsonPreviewWindowName[] = "JSON 预览###JSON Preview";
 constexpr char kVariableSearchInputId[] = "##variable_name_query";
+constexpr char kExportDialogName[] = "导出选项###export_options_dialog";
 constexpr char kAboutDialogName[] = "关于 ElfStaticView###about_dialog";
 constexpr char kShortcutsDialogName[] = "快捷键说明###shortcuts_dialog";
 constexpr CopyAddressBase kCopyAddressBaseOptions[] = {
@@ -281,11 +282,14 @@ void export_snapshot_from_dialog(AppState& state) {
     log_error(state, "当前没有可导出的模型");
     return;
   }
-  const auto file_path = save_snapshot_file_dialog("snapshot.json");
+  const auto suggested_name =
+      state.export_dialog.options.format == ExportFormat::BinaryPrivate ? "snapshot.esv" : "snapshot.json";
+  const auto file_path = save_export_file_dialog(suggested_name);
   if (!file_path.has_value()) {
     return;
   }
   state.pending_export_snapshot_path = file_path.value();
+  state.pending_export_options = state.export_dialog.options;
   log_info(state, "已选择导出路径，准备后台导出: " + file_path.value());
 }
 
@@ -343,12 +347,9 @@ void render_menu_bar(AppState& state) {
     if (state.export_snapshot_task.status == UiTaskStatus::Running) {
       ImGui::BeginDisabled();
     }
-    if (ImGui::MenuItem("导出 JSON...")) {
-      try {
-        export_snapshot_from_dialog(state);
-      } catch (const std::exception& error) {
-        log_error(state, error.what());
-      }
+    if (ImGui::MenuItem("导出数据...")) {
+      state.export_dialog.options.include_sensitive_info = state.export_sensitive_info;
+      state.export_dialog.open = true;
     }
     if (state.export_snapshot_task.status == UiTaskStatus::Running) {
       ImGui::EndDisabled();
@@ -367,9 +368,6 @@ void render_menu_bar(AppState& state) {
       ImGui::EndDisabled();
     }
     ImGui::Separator();
-    if (ImGui::Checkbox("导出敏感信息", &state.export_sensitive_info)) {
-      state.json_preview_dirty = true;
-    }
     if (ImGui::MenuItem("退出")) {
       state.request_exit = true;
     }
@@ -676,6 +674,66 @@ void render_json_preview_panel(AppState& state) {
   ImGui::End();
 }
 
+void render_export_dialog(AppState& state) {
+  if (!state.export_dialog.open) {
+    return;
+  }
+  ImGui::OpenPopup(kExportDialogName);
+  if (!ImGui::BeginPopupModal(kExportDialogName, &state.export_dialog.open, ImGuiWindowFlags_AlwaysAutoResize)) {
+    return;
+  }
+
+  auto& options = state.export_dialog.options;
+  int format = static_cast<int>(options.format);
+  int source = static_cast<int>(options.source);
+  int payload_kind = static_cast<int>(options.payload_kind);
+
+  ImGui::TextUnformatted("导出格式");
+  ImGui::RadioButton("易读 JSON", &format, static_cast<int>(ExportFormat::JsonPretty));
+  ImGui::SameLine();
+  ImGui::RadioButton("紧凑 JSON", &format, static_cast<int>(ExportFormat::JsonCompact));
+  ImGui::SameLine();
+  ImGui::RadioButton("私有二进制", &format, static_cast<int>(ExportFormat::BinaryPrivate));
+
+  ImGui::TextUnformatted("数据来源");
+  ImGui::RadioButton("完整模型", &source, static_cast<int>(ExportSource::FullModel));
+  ImGui::SameLine();
+  ImGui::RadioButton("当前筛选结果", &source, static_cast<int>(ExportSource::CurrentFilteredView));
+
+  ImGui::TextUnformatted("导出内容");
+  ImGui::RadioButton("完整快照", &payload_kind, static_cast<int>(ExportPayloadKind::FullSnapshot));
+  ImGui::SameLine();
+  ImGui::RadioButton("精简变量", &payload_kind, static_cast<int>(ExportPayloadKind::VariableSummary));
+
+  options.format = static_cast<ExportFormat>(format);
+  options.source = static_cast<ExportSource>(source);
+  options.payload_kind = static_cast<ExportPayloadKind>(payload_kind);
+
+  if (ImGui::Checkbox("包含敏感信息", &options.include_sensitive_info)) {
+    state.export_sensitive_info = options.include_sensitive_info;
+    state.json_preview_dirty = true;
+  }
+  ImGui::TextWrapped("敏感信息包含源文件路径、编译单元路径和编译器指纹；变量名、类型名、地址仍会导出。");
+
+  ImGui::Separator();
+  if (ImGui::Button("导出")) {
+    state.export_sensitive_info = options.include_sensitive_info;
+    try {
+      export_snapshot_from_dialog(state);
+      state.export_dialog.open = false;
+      ImGui::CloseCurrentPopup();
+    } catch (const std::exception& error) {
+      log_error(state, error.what());
+    }
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("取消")) {
+    state.export_dialog.open = false;
+    ImGui::CloseCurrentPopup();
+  }
+  ImGui::EndPopup();
+}
+
 void render_about_dialog(AppState& state) {
   if (!state.show_about_dialog) {
     return;
@@ -774,6 +832,7 @@ bool MainWindow::render(AppState& state) {
   render_inspector_panel(state);
   render_log_panel(state);
   render_json_preview_panel(state);
+  render_export_dialog(state);
   render_shortcuts_dialog(state);
   render_about_dialog(state);
 

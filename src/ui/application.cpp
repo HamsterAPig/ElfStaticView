@@ -26,11 +26,13 @@
 #include <future>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <system_error>
 #include <thread>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 
 namespace elf_static_view::ui {
@@ -62,6 +64,71 @@ void write_all_text(const std::string& path, const std::string& content) {
   if (!output.good()) {
     throw std::runtime_error("写入文件失败: " + path);
   }
+}
+
+[[nodiscard]] std::optional<ExpandedNode> filter_export_node(
+    const ExpandedNode& node,
+    const std::unordered_set<std::string>& visible_paths) {
+  if (visible_paths.find(node.path) == visible_paths.end()) {
+    return std::nullopt;
+  }
+
+  ExpandedNode filtered = node;
+  filtered.children.clear();
+  for (const auto& child : node.children) {
+    auto filtered_child = filter_export_node(child, visible_paths);
+    if (filtered_child.has_value()) {
+      filtered.children.push_back(std::move(filtered_child.value()));
+    }
+  }
+  return filtered;
+}
+
+[[nodiscard]] std::vector<ExpandedNode> collect_filtered_roots(const AppState& state) {
+  if (!state.project_model) {
+    return {};
+  }
+  if (!state.filters.cache.valid || state.filters.cache.model != state.project_model.share_readonly().get()) {
+    return state.project_model->expanded;
+  }
+
+  std::vector<ExpandedNode> roots;
+  for (const auto& node : state.project_model->expanded) {
+    auto filtered = filter_export_node(node, state.filters.cache.visible_paths);
+    if (filtered.has_value()) {
+      roots.push_back(std::move(filtered.value()));
+    }
+  }
+  return roots;
+}
+
+[[nodiscard]] ExportDocument build_export_document_from_state(const AppState& state,
+                                                              const ExportOptions& options) {
+  const auto snapshot = build_snapshot(state);
+  if (!snapshot.has_value()) {
+    throw std::runtime_error("当前没有可导出的模型");
+  }
+
+  auto value = snapshot.value();
+  if (value.exported_at.empty()) {
+    value.exported_at = "generated-by-ui";
+  }
+
+  if (options.payload_kind == ExportPayloadKind::FullSnapshot) {
+    if (options.source == ExportSource::CurrentFilteredView) {
+      value.model.expanded = collect_filtered_roots(state);
+      value.model.symbols.clear();
+    }
+    return ExportDocument {ExportPayloadKind::FullSnapshot, std::move(value)};
+  }
+
+  if (options.source == ExportSource::CurrentFilteredView) {
+    auto nodes = collect_filtered_roots(state);
+    return ExportDocument {ExportPayloadKind::VariableSummary,
+                           build_lightweight_export(nodes, options)};
+  }
+  return ExportDocument {ExportPayloadKind::VariableSummary,
+                         build_lightweight_export(value.model, options)};
 }
 
 constexpr float kBaseFontSize = 18.0F;
@@ -367,23 +434,20 @@ void Application::start_snapshot_import(const std::string& path) {
   request_redraw();
 }
 
-void Application::start_snapshot_export(const std::string& path) {
-  const auto snapshot = build_snapshot(state_);
-  if (!snapshot.has_value()) {
-    log_error(state_, "当前没有可导出的模型");
+void Application::start_snapshot_export(const std::string& path, const ExportOptions& options) {
+  ExportDocument document;
+  try {
+    document = build_export_document_from_state(state_, options);
+  } catch (const std::exception& error) {
+    log_error(state_, error.what());
     return;
   }
-  auto value = snapshot.value();
-  if (value.exported_at.empty()) {
-    value.exported_at = "generated-by-ui";
-  }
-  const bool include_sensitive_info = state_.export_sensitive_info;
   const std::uint64_t task_id = task_runner_.submit(
     kTaskSnapshotExport,
     path,
-    [path, value = std::move(value), include_sensitive_info]() -> std::pair<bool, std::string> {
+    [path, document = std::move(document), options]() -> std::pair<bool, std::string> {
       try {
-        write_all_text(path, render_snapshot_json(value, {.include_sensitive_info = include_sensitive_info}));
+        write_all_text(path, render_export_document(document, options));
         return {true, path};
       } catch (const std::exception& error) {
         return {false, error.what()};
@@ -562,8 +626,15 @@ void Application::poll_background_tasks() {
     state_.pending_import_snapshot_path.reset();
   }
   if (state_.pending_export_snapshot_path.has_value()) {
-    start_snapshot_export(*state_.pending_export_snapshot_path);
+    const auto options = state_.pending_export_options.value_or(ExportOptions {
+      ExportFormat::JsonPretty,
+      ExportSource::FullModel,
+      ExportPayloadKind::FullSnapshot,
+      state_.export_sensitive_info,
+    });
+    start_snapshot_export(*state_.pending_export_snapshot_path, options);
     state_.pending_export_snapshot_path.reset();
+    state_.pending_export_options.reset();
   }
   if (state_.pending_export_raw_dwarf_source_path.has_value() &&
       state_.pending_export_raw_dwarf_output_path.has_value()) {
@@ -600,8 +671,8 @@ void Application::poll_background_tasks() {
 
   if (const auto exported = task_runner_.poll(kTaskSnapshotExport); exported.has_value()) {
     if (exported->success) {
-      if (finish_ui_task(state_.export_snapshot_task, exported->id, "已导出 JSON 快照")) {
-        log_info(state_, "已导出 JSON 快照: " + exported->success_value);
+      if (finish_ui_task(state_.export_snapshot_task, exported->id, "已导出数据文件")) {
+        log_info(state_, "已导出数据文件: " + exported->success_value);
       }
     } else if (fail_ui_task(state_.export_snapshot_task, exported->id, exported->error_message)) {
       log_error(state_, exported->error_message);

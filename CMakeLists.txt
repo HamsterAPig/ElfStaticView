@@ -66,6 +66,7 @@ endif()
 
 add_library(elf_static_view_core
   src/analysis/address_bias.cpp
+  src/analysis/export_document.cpp
   src/analysis/expander.cpp
   src/analysis/model_json.cpp
   src/analysis/model_utils.cpp

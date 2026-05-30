@@ -135,6 +135,11 @@ struct FilterState {
   std::optional<std::string> build_error;
 };
 
+struct ExportDialogState {
+  bool open = false;
+  ExportOptions options;
+};
+
 struct VersionCheckState {
   std::string repository_url;
   std::string check_uri;
@@ -217,6 +222,7 @@ struct AppState {
   bool show_log_panel = true;
   bool show_json_preview_panel = true;
   bool export_sensitive_info = false;
+  ExportDialogState export_dialog;
   bool show_about_dialog = false;
   bool show_shortcuts_dialog = false;
   bool request_exit = false;
@@ -225,6 +231,7 @@ struct AppState {
   std::optional<std::string> pending_open_elf_path;
   std::optional<std::string> pending_import_snapshot_path;
   std::optional<std::string> pending_export_snapshot_path;
+  std::optional<ExportOptions> pending_export_options;
   std::optional<std::string> pending_export_raw_dwarf_source_path;
   std::optional<std::string> pending_export_raw_dwarf_output_path;
   bool pending_version_check = false;

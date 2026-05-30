@@ -50,11 +50,26 @@ private:
     const ProjectSnapshot& snapshot,
     const SnapshotExportOptions& options = {});
 [[nodiscard]] ProjectSnapshot parse_snapshot_json(const std::string& json_text);
+[[nodiscard]] std::string render_export_document(
+    const ExportDocument& document,
+    const ExportOptions& options = {});
+[[nodiscard]] ExportDocument parse_export_bytes(
+    const std::string& bytes,
+    ExportFormat format);
+[[nodiscard]] ExportDocument load_export_file(
+    const std::string& file_path,
+    ExportFormat format);
 [[nodiscard]] std::string render_raw_dwarf_json(const RawDwarfDocument& document);
 [[nodiscard]] std::string render_expanded_node_json(const ExpandedNode& node);
 [[nodiscard]] ProjectSnapshot build_export_snapshot(
     const ProjectSnapshot& snapshot,
     const SnapshotExportOptions& options = {});
+[[nodiscard]] LightweightExport build_lightweight_export(
+    const ProjectModel& model,
+    const ExportOptions& options = {});
+[[nodiscard]] LightweightExport build_lightweight_export(
+    const std::vector<ExpandedNode>& nodes,
+    const ExportOptions& options = {});
 [[nodiscard]] std::vector<StaticAddressResult> query_static_addresses(
     const ProjectModel& model,
     const StaticAddressQueryOptions& options = {});

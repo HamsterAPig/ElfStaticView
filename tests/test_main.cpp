@@ -2858,6 +2858,65 @@ void verify_snapshot_export_redaction() {
               "脱敏快照应保留地址信息");
 }
 
+void verify_lightweight_export_round_trip() {
+  elf_static_view::ProjectModel model;
+  elf_static_view::TypeNode type;
+  type.id = "type@int";
+  type.name = "int";
+  model.types.push_back(type);
+  elf_static_view::VariableRecord symbol;
+  symbol.id = "D:/secret/source.cpp::demo";
+  symbol.name = "demo变量";
+  symbol.type.id = "type@int";
+  symbol.address.absolute_address = 0x401000;
+  model.symbols.push_back(symbol);
+
+  const elf_static_view::ExportOptions json_options {
+    elf_static_view::ExportFormat::JsonCompact,
+    elf_static_view::ExportSource::FullModel,
+    elf_static_view::ExportPayloadKind::VariableSummary,
+    false,
+  };
+  const auto lightweight = elf_static_view::build_lightweight_export(model, json_options);
+  expect_true(lightweight.variables.size() == 1, "精简导出应包含变量记录");
+  expect_true(lightweight.variables.front().path == "demo变量", "脱敏精简导出不应保留源路径");
+
+  const elf_static_view::ExportDocument json_document {
+    elf_static_view::ExportPayloadKind::VariableSummary,
+    lightweight,
+  };
+  const auto compact_json = elf_static_view::render_export_document(json_document, json_options);
+  expect_true(compact_json.find('\n') == std::string::npos, "紧凑 JSON 不应包含换行");
+  const auto parsed_json = elf_static_view::parse_export_bytes(compact_json, json_options.format);
+  const auto parsed_lightweight = std::get<elf_static_view::LightweightExport>(parsed_json.payload);
+  expect_true(parsed_lightweight.variables.front().name == "demo变量", "精简 JSON 导入应保留变量名");
+  expect_true(parsed_lightweight.variables.front().address == 0x401000, "精简 JSON 导入应保留地址");
+
+  const elf_static_view::ExportOptions binary_options {
+    elf_static_view::ExportFormat::BinaryPrivate,
+    elf_static_view::ExportSource::CurrentFilteredView,
+    elf_static_view::ExportPayloadKind::VariableSummary,
+    true,
+  };
+  const elf_static_view::ExportDocument binary_document {
+    elf_static_view::ExportPayloadKind::VariableSummary,
+    elf_static_view::LightweightExport {
+      1,
+      elf_static_view::ExportSource::CurrentFilteredView,
+      true,
+      lightweight.variables,
+    },
+  };
+  const auto binary = elf_static_view::render_export_document(binary_document, binary_options);
+  expect_true(binary.size() < compact_json.size() + 64, "二进制精简导出应保持较小体积");
+  const auto parsed_binary = elf_static_view::parse_export_bytes(binary, binary_options.format);
+  const auto parsed_binary_lightweight = std::get<elf_static_view::LightweightExport>(parsed_binary.payload);
+  expect_true(parsed_binary_lightweight.source == elf_static_view::ExportSource::CurrentFilteredView,
+              "二进制导入应保留导出来源");
+  expect_true(parsed_binary_lightweight.variables.front().type_name == "int",
+              "二进制导入应保留类型名");
+}
+
 void verify_ui_config_round_trip() {
   const auto temp_root = std::filesystem::temp_directory_path() /
                          ("elf-static-view-config-round-trip-" +
@@ -3376,6 +3435,7 @@ int main() {
     verify_elf_symbol_table_metadata();
     verify_c2000_elf_metadata();
     verify_snapshot_export_redaction();
+    verify_lightweight_export_round_trip();
     verify_ui_config_round_trip();
     verify_version_check_resolution();
     verify_version_response_parsing();
