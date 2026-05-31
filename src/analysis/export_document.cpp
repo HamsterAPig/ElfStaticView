@@ -355,13 +355,17 @@ private:
          std::equal(kBinaryMagic.begin(), kBinaryMagic.end(), bytes.begin());
 }
 
+[[nodiscard]] const std::string& export_path_or_path(const ExpandedNode& node) {
+  return node.export_path.empty() ? node.path : node.export_path;
+}
+
 void collect_expanded_nodes(const std::vector<ExpandedNode>& nodes,
                             const std::size_t max_array_elements,
                             std::vector<LightweightVariableRecord>& output) {
   for (const auto& node : nodes) {
     LightweightVariableRecord record;
-    // 轻量路径是 GUI 与查询的稳定 key，脱敏模式也必须保留完整逻辑路径。
-    record.path = node.path;
+    // 轻量导出的 wire path 使用逻辑路径，避免把内部去重 key 写出文件。
+    record.path = export_path_or_path(node);
     record.name = node.display_name;
     record.type_name = node.type_name;
     record.address = node.absolute_address;
@@ -483,6 +487,7 @@ ProjectModel build_lightweight_project_model(const LightweightExport& document,
     const auto raw_path = variable.path.empty() ? variable.name : variable.path;
     // 兼容旧版坏数据：重复 path 会触发 ImGui ID 冲突，这里只改内部 key，不改显示名。
     node.path = make_unique_lightweight_path(raw_path, path_counts);
+    node.export_path = raw_path;
     node.display_name = variable.name.empty() ? raw_path : variable.name;
     node.type_name = variable.type_name;
     node.type_id = "lightweight";

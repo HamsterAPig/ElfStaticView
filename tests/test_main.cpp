@@ -3015,6 +3015,27 @@ void verify_lightweight_export_keeps_sanitized_member_paths() {
               "脱敏精简导出数组元素 1 应保留完整逻辑路径");
   expect_true(lightweight.variables[1].name == "member",
               "脱敏精简导出仍应保留显示名供 UI 展示");
+
+  const elf_static_view::ExportDocument json_document {
+    elf_static_view::ExportPayloadKind::VariableSummary,
+    lightweight,
+  };
+  options.format = elf_static_view::ExportFormat::JsonCompact;
+  const auto compact_json = elf_static_view::render_export_document(json_document, options);
+  expect_true(compact_json.find("\"root.object.member\"") != std::string::npos,
+              "紧凑 JSON 精简导出应写出完整成员逻辑路径");
+  options.format = elf_static_view::ExportFormat::JsonPretty;
+  const auto pretty_json = elf_static_view::render_export_document(json_document, options);
+  expect_true(pretty_json.find("\"root.array[0]\"") != std::string::npos,
+              "格式化 JSON 精简导出应写出完整数组元素逻辑路径");
+  options.format = elf_static_view::ExportFormat::BinaryPrivate;
+  const auto binary = elf_static_view::render_export_document(json_document, options);
+  const auto parsed_binary = elf_static_view::parse_export_bytes(binary, options.format);
+  const auto parsed_lightweight = std::get<elf_static_view::LightweightExport>(parsed_binary.payload);
+  expect_true(parsed_lightweight.variables[1].path == "root.object.member",
+              "私有二进制精简导出应写出完整成员逻辑路径");
+  expect_true(parsed_lightweight.variables[3].path == "root.array[0]",
+              "私有二进制精简导出应写出完整数组元素逻辑路径");
 }
 
 void verify_import_project_data_auto_and_lightweight_model() {
@@ -3089,6 +3110,42 @@ void verify_import_project_data_auto_and_lightweight_model() {
   expect_true(duplicate_results.size() == 3, "静态地址查询应返回重复节点各自的唯一 key");
   expect_true(static_address_result_exists(duplicate_results, "root.member#2"),
               "静态地址查询应能返回第二个重复节点的兼容 key");
+  elf_static_view::ExportOptions duplicate_export_options;
+  duplicate_export_options.format = elf_static_view::ExportFormat::JsonCompact;
+  duplicate_export_options.payload_kind = elf_static_view::ExportPayloadKind::VariableSummary;
+  const auto duplicate_reexport =
+      elf_static_view::build_lightweight_export(duplicate_model.expanded, duplicate_export_options);
+  expect_true(duplicate_reexport.variables.size() == 3, "重复 path 再导出不应丢失节点");
+  expect_true(duplicate_reexport.variables[0].path == "root.member",
+              "重复 path 再导出首个节点应使用逻辑路径");
+  expect_true(duplicate_reexport.variables[1].path == "root.member",
+              "重复 path 再导出第二个节点不应泄漏 #2 兼容后缀");
+  expect_true(duplicate_reexport.variables[2].path == "root.member",
+              "重复 path 再导出第三个节点不应泄漏 #3 兼容后缀");
+  const elf_static_view::ExportDocument duplicate_document {
+    elf_static_view::ExportPayloadKind::VariableSummary,
+    duplicate_reexport,
+  };
+  const auto duplicate_json =
+      elf_static_view::render_export_document(duplicate_document, duplicate_export_options);
+  expect_true(duplicate_json.find("#2") == std::string::npos &&
+                duplicate_json.find("#3") == std::string::npos,
+              "重复 path 再导出的紧凑 JSON 不应包含内部兼容后缀");
+  duplicate_export_options.format = elf_static_view::ExportFormat::JsonPretty;
+  const auto duplicate_pretty_json =
+      elf_static_view::render_export_document(duplicate_document, duplicate_export_options);
+  expect_true(duplicate_pretty_json.find("#2") == std::string::npos &&
+                duplicate_pretty_json.find("#3") == std::string::npos,
+              "重复 path 再导出的格式化 JSON 不应包含内部兼容后缀");
+  duplicate_export_options.format = elf_static_view::ExportFormat::BinaryPrivate;
+  const auto duplicate_binary =
+      elf_static_view::render_export_document(duplicate_document, duplicate_export_options);
+  const auto parsed_duplicate_binary =
+      elf_static_view::parse_export_bytes(duplicate_binary, duplicate_export_options.format);
+  const auto parsed_duplicate_lightweight =
+      std::get<elf_static_view::LightweightExport>(parsed_duplicate_binary.payload);
+  expect_true(parsed_duplicate_lightweight.variables[1].path == "root.member",
+              "重复 path 再导出的私有二进制不应包含 #2 兼容后缀");
 
   elf_static_view::ExportOptions binary_options;
   binary_options.format = elf_static_view::ExportFormat::BinaryPrivate;
@@ -3101,6 +3158,17 @@ void verify_import_project_data_auto_and_lightweight_model() {
   elf_static_view::ProjectSnapshot snapshot;
   snapshot.source_file = "old.elf";
   snapshot.model.file = "old.elf";
+  elf_static_view::ExpandedNode snapshot_member;
+  snapshot_member.path = "g_struct[0].name";
+  snapshot_member.display_name = "name";
+  snapshot_member.type_name = "char[16]";
+  snapshot_member.type_kind = elf_static_view::TypeKind::Array;
+  snapshot_member.absolute_address = 0x402000;
+  elf_static_view::ExpandedNode snapshot_duplicate_member = snapshot_member;
+  snapshot_duplicate_member.path = "g_struct[0].name#2";
+  snapshot_duplicate_member.export_path = "g_struct[0].name";
+  snapshot_duplicate_member.absolute_address = 0x402010;
+  snapshot.model.expanded = {snapshot_member, snapshot_duplicate_member};
   const elf_static_view::ExportDocument snapshot_document {
     elf_static_view::ExportPayloadKind::FullSnapshot,
     snapshot,
@@ -3109,11 +3177,21 @@ void verify_import_project_data_auto_and_lightweight_model() {
   snapshot_options.format = elf_static_view::ExportFormat::BinaryPrivate;
   snapshot_options.payload_kind = elf_static_view::ExportPayloadKind::FullSnapshot;
   const auto binary_snapshot = elf_static_view::render_export_document(snapshot_document, snapshot_options);
+  expect_true(binary_snapshot.find("#2") == std::string::npos,
+              "私有二进制完整快照不应写出内部兼容后缀");
   const auto imported_snapshot = elf_static_view::import_project_data_bytes(binary_snapshot, "snapshot.esv");
   expect_true(imported_snapshot.payload_kind == elf_static_view::ExportPayloadKind::FullSnapshot,
               "自动导入应识别私有二进制完整快照");
   expect_true(imported_snapshot.snapshot.source_file == "old.elf",
               "完整快照导入应保留快照语义");
+  expect_true(imported_snapshot.snapshot.model.expanded.size() == 2,
+              "完整快照导入应保留重复逻辑路径对应的节点");
+  expect_true(imported_snapshot.snapshot.model.expanded[0].path == "g_struct[0].name",
+              "完整快照导入首个节点应使用逻辑路径作为内部 key");
+  expect_true(imported_snapshot.snapshot.model.expanded[1].path == "g_struct[0].name#2",
+              "完整快照导入重复节点应恢复内部唯一 key");
+  expect_true(imported_snapshot.snapshot.model.expanded[1].export_path == "g_struct[0].name",
+              "完整快照导入重复节点应保留对外逻辑路径");
 }
 
 void verify_ui_config_round_trip() {

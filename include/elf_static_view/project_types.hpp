@@ -158,6 +158,8 @@ struct ExpandedNode {
   std::size_t depth = 0;
   bool children_lazy = false;
   std::vector<ExpandedNode> children;
+  // 轻量导入为避免 UI ID 冲突会改写 path；导出时仍使用原始逻辑路径。
+  std::string export_path;
 };
 
 struct ProjectSummary {

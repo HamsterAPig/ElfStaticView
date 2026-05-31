@@ -7,10 +7,16 @@
 #include <cstdint>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace elf_static_view {
 
 namespace {
+
+enum class ExpandedNodePathMode {
+  Internal,
+  Export,
+};
 
 template <typename T>
 void append_optional_number_field(std::ostringstream& stream,
@@ -526,10 +532,20 @@ void append_elf_file_info(std::ostringstream& stream,
   stream << '\n';
 }
 
-void append_expanded_node(std::ostringstream& stream, const ExpandedNode& node, const int level) {
+[[nodiscard]] const std::string& export_path_or_path(const ExpandedNode& node) {
+  return node.export_path.empty() ? node.path : node.export_path;
+}
+
+void append_expanded_node(std::ostringstream& stream,
+                          const ExpandedNode& node,
+                          const int level,
+                          const ExpandedNodePathMode path_mode = ExpandedNodePathMode::Internal) {
   append_indent(stream, level);
   stream << "{\n";
-  append_string_field(stream, "path", node.path, level + 1);
+  append_string_field(stream,
+                      "path",
+                      path_mode == ExpandedNodePathMode::Export ? export_path_or_path(node) : node.path,
+                      level + 1);
   append_string_field(stream, "display_name", node.display_name, level + 1);
   append_string_field(stream, "type_name", node.type_name, level + 1);
   append_string_field(stream, "type_id", node.type_id, level + 1);
@@ -543,7 +559,7 @@ void append_expanded_node(std::ostringstream& stream, const ExpandedNode& node, 
   append_number_field(stream, "depth", node.depth, level + 1);
   append_bool_field(stream, "children_lazy", node.children_lazy, level + 1);
   append_array(stream, "children", node.children.size(), level + 1, [&](const std::size_t index, const int item_level) {
-    append_expanded_node(stream, node.children[index], item_level);
+    append_expanded_node(stream, node.children[index], item_level, path_mode);
   }, false);
   append_indent(stream, level);
   stream << '}';
@@ -612,7 +628,8 @@ void append_raw_dwarf_compile_unit(std::ostringstream& stream,
 void append_project_model(std::ostringstream& stream,
                           const ProjectModel& model,
                           const int level,
-                          const bool trailing_comma = true) {
+                          const bool trailing_comma = true,
+                          const ExpandedNodePathMode path_mode = ExpandedNodePathMode::Internal) {
   append_indent(stream, level);
   stream << "{\n";
   append_string_field(stream, "file", model.file, level + 1);
@@ -630,7 +647,7 @@ void append_project_model(std::ostringstream& stream,
     append_variable_record(stream, model.symbols[index], item_level);
   });
   append_array(stream, "expanded", model.expanded.size(), level + 1, [&](const std::size_t index, const int item_level) {
-    append_expanded_node(stream, model.expanded[index], item_level);
+    append_expanded_node(stream, model.expanded[index], item_level, path_mode);
   });
   append_indent(stream, level + 1);
   append_string(stream, "metrics");
@@ -814,6 +831,20 @@ ExpandedNode parse_expanded_node(const YAML::Node& node) {
   return expanded;
 }
 
+void make_unique_expanded_paths(std::vector<ExpandedNode>& nodes,
+                                std::unordered_map<std::string, std::size_t>& path_counts) {
+  for (auto& node : nodes) {
+    const auto raw_path = node.path;
+    const auto count = ++path_counts[raw_path];
+    if (count > 1) {
+      // 完整快照 wire path 是可读逻辑路径；导入后恢复内部唯一 key，避免 UI ID 冲突。
+      node.export_path = raw_path;
+      node.path = raw_path + "#" + std::to_string(count);
+    }
+    make_unique_expanded_paths(node.children, path_counts);
+  }
+}
+
 ProjectModel parse_project_model(const YAML::Node& node) {
   ProjectModel model;
   model.file = node["file"].as<std::string>();
@@ -830,6 +861,8 @@ ProjectModel parse_project_model(const YAML::Node& node) {
   for (const auto& item : node["expanded"]) {
     model.expanded.push_back(parse_expanded_node(item));
   }
+  std::unordered_map<std::string, std::size_t> expanded_path_counts;
+  make_unique_expanded_paths(model.expanded, expanded_path_counts);
   if (const auto metrics = node["metrics"]; metrics) {
     model.metrics.dwarf_load_ms = parse_optional_number<std::uint64_t>(metrics, "dwarf_load_ms").value_or(0);
     model.metrics.symbol_table_ms =
@@ -891,7 +924,7 @@ std::string render_snapshot_json(const ProjectSnapshot& snapshot,
   append_indent(stream, 1);
   append_string(stream, "model");
   stream << ": ";
-  append_project_model(stream, exported.model, 1, false);
+  append_project_model(stream, exported.model, 1, false, ExpandedNodePathMode::Export);
   stream << "}\n";
   return stream.str();
 }
