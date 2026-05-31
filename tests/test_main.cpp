@@ -2999,22 +2999,44 @@ void verify_lightweight_export_keeps_sanitized_member_paths() {
     array_node.children.push_back(std::move(element_node));
   }
 
-  model.expanded = {std::move(object_node), std::move(array_node)};
+  elf_static_view::ExpandedNode struct_array_element_node;
+  struct_array_element_node.path = "e_var_struct[0]";
+  struct_array_element_node.display_name = "e_var_struct[0]";
+  struct_array_element_node.type_name = "ExampleStruct";
+  struct_array_element_node.type_kind = elf_static_view::TypeKind::Struct;
+  struct_array_element_node.absolute_address = 0x8000;
+  elf_static_view::ExpandedNode struct_array_member_node;
+  struct_array_member_node.path = "e_var_struct[0].name";
+  struct_array_member_node.display_name = "name";
+  struct_array_member_node.type_name = "char[16]";
+  struct_array_member_node.type_kind = elf_static_view::TypeKind::Array;
+  struct_array_member_node.absolute_address = 0x8004;
+  struct_array_element_node.children.push_back(std::move(struct_array_member_node));
+
+  model.expanded = {std::move(object_node),
+                    std::move(array_node),
+                    std::move(struct_array_element_node)};
 
   elf_static_view::ExportOptions options;
   options.payload_kind = elf_static_view::ExportPayloadKind::VariableSummary;
   options.include_sensitive_info = false;
   const auto lightweight = elf_static_view::build_lightweight_export(model, options);
 
-  expect_true(lightweight.variables.size() == 5, "脱敏精简导出应递归收集成员和数组元素");
+  expect_true(lightweight.variables.size() == 7, "脱敏精简导出应递归收集成员和数组元素");
   expect_true(lightweight.variables[1].path == "root.object.member",
               "脱敏精简导出成员路径不应降级为显示名");
+  expect_true(lightweight.variables[1].name == "root.object.member",
+              "脱敏精简导出成员名称应使用完整逻辑路径");
   expect_true(lightweight.variables[3].path == "root.array[0]",
               "脱敏精简导出数组元素 0 应保留完整逻辑路径");
+  expect_true(lightweight.variables[3].name == "root.array[0]",
+              "脱敏精简导出数组元素名称应使用完整逻辑路径");
   expect_true(lightweight.variables[4].path == "root.array[1]",
               "脱敏精简导出数组元素 1 应保留完整逻辑路径");
-  expect_true(lightweight.variables[1].name == "member",
-              "脱敏精简导出仍应保留显示名供 UI 展示");
+  expect_true(lightweight.variables[6].path == "e_var_struct[0].name",
+              "脱敏精简导出结构体数组成员路径应包含父数组元素");
+  expect_true(lightweight.variables[6].name == "e_var_struct[0].name",
+              "脱敏精简导出结构体数组成员名称应包含父数组元素");
 
   const elf_static_view::ExportDocument json_document {
     elf_static_view::ExportPayloadKind::VariableSummary,
@@ -3024,10 +3046,20 @@ void verify_lightweight_export_keeps_sanitized_member_paths() {
   const auto compact_json = elf_static_view::render_export_document(json_document, options);
   expect_true(compact_json.find("\"root.object.member\"") != std::string::npos,
               "紧凑 JSON 精简导出应写出完整成员逻辑路径");
+  const auto parsed_compact_json = elf_static_view::parse_export_bytes(compact_json, options.format);
+  const auto parsed_compact_lightweight =
+      std::get<elf_static_view::LightweightExport>(parsed_compact_json.payload);
+  expect_true(parsed_compact_lightweight.variables[6].name == "e_var_struct[0].name",
+              "紧凑 JSON 精简导出成员名称应写出完整逻辑路径");
   options.format = elf_static_view::ExportFormat::JsonPretty;
   const auto pretty_json = elf_static_view::render_export_document(json_document, options);
   expect_true(pretty_json.find("\"root.array[0]\"") != std::string::npos,
               "格式化 JSON 精简导出应写出完整数组元素逻辑路径");
+  const auto parsed_pretty_json = elf_static_view::parse_export_bytes(pretty_json, options.format);
+  const auto parsed_pretty_lightweight =
+      std::get<elf_static_view::LightweightExport>(parsed_pretty_json.payload);
+  expect_true(parsed_pretty_lightweight.variables[6].name == "e_var_struct[0].name",
+              "格式化 JSON 精简导出成员名称应写出完整逻辑路径");
   options.format = elf_static_view::ExportFormat::BinaryPrivate;
   const auto binary = elf_static_view::render_export_document(json_document, options);
   const auto parsed_binary = elf_static_view::parse_export_bytes(binary, options.format);
@@ -3036,6 +3068,8 @@ void verify_lightweight_export_keeps_sanitized_member_paths() {
               "私有二进制精简导出应写出完整成员逻辑路径");
   expect_true(parsed_lightweight.variables[3].path == "root.array[0]",
               "私有二进制精简导出应写出完整数组元素逻辑路径");
+  expect_true(parsed_lightweight.variables[6].name == "e_var_struct[0].name",
+              "私有二进制精简导出成员名称应写出完整逻辑路径");
 }
 
 void verify_import_project_data_auto_and_lightweight_model() {
@@ -3118,8 +3152,12 @@ void verify_import_project_data_auto_and_lightweight_model() {
   expect_true(duplicate_reexport.variables.size() == 3, "重复 path 再导出不应丢失节点");
   expect_true(duplicate_reexport.variables[0].path == "root.member",
               "重复 path 再导出首个节点应使用逻辑路径");
+  expect_true(duplicate_reexport.variables[0].name == "root.member",
+              "重复 path 再导出首个节点名称应使用逻辑路径");
   expect_true(duplicate_reexport.variables[1].path == "root.member",
               "重复 path 再导出第二个节点不应泄漏 #2 兼容后缀");
+  expect_true(duplicate_reexport.variables[1].name == "root.member",
+              "重复 path 再导出第二个节点名称不应泄漏 #2 兼容后缀");
   expect_true(duplicate_reexport.variables[2].path == "root.member",
               "重复 path 再导出第三个节点不应泄漏 #3 兼容后缀");
   const elf_static_view::ExportDocument duplicate_document {
@@ -3146,6 +3184,8 @@ void verify_import_project_data_auto_and_lightweight_model() {
       std::get<elf_static_view::LightweightExport>(parsed_duplicate_binary.payload);
   expect_true(parsed_duplicate_lightweight.variables[1].path == "root.member",
               "重复 path 再导出的私有二进制不应包含 #2 兼容后缀");
+  expect_true(parsed_duplicate_lightweight.variables[1].name == "root.member",
+              "重复 path 再导出的私有二进制名称不应包含 #2 兼容后缀");
 
   elf_static_view::ExportOptions binary_options;
   binary_options.format = elf_static_view::ExportFormat::BinaryPrivate;

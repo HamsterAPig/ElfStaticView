@@ -364,9 +364,10 @@ void collect_expanded_nodes(const std::vector<ExpandedNode>& nodes,
                             std::vector<LightweightVariableRecord>& output) {
   for (const auto& node : nodes) {
     LightweightVariableRecord record;
-    // 轻量导出的 wire path 使用逻辑路径，避免把内部去重 key 写出文件。
-    record.path = export_path_or_path(node);
-    record.name = node.display_name;
+    // 精简导出的 path/name 都使用完整逻辑路径，避免成员名脱离父节点后失去上下文。
+    const auto& wire_path = export_path_or_path(node);
+    record.path = wire_path;
+    record.name = wire_path;
     record.type_name = node.type_name;
     record.address = node.absolute_address;
     output.push_back(std::move(record));
