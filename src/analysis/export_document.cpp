@@ -14,6 +14,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 
 namespace elf_static_view {
 
@@ -355,12 +356,12 @@ private:
 }
 
 void collect_expanded_nodes(const std::vector<ExpandedNode>& nodes,
-                            const bool include_sensitive_info,
                             const std::size_t max_array_elements,
                             std::vector<LightweightVariableRecord>& output) {
   for (const auto& node : nodes) {
     LightweightVariableRecord record;
-    record.path = include_sensitive_info ? node.path : node.display_name;
+    // 轻量路径是 GUI 与查询的稳定 key，脱敏模式也必须保留完整逻辑路径。
+    record.path = node.path;
     record.name = node.display_name;
     record.type_name = node.type_name;
     record.address = node.absolute_address;
@@ -371,11 +372,20 @@ void collect_expanded_nodes(const std::vector<ExpandedNode>& nodes,
     const auto child_count = limit_array_children ? max_array_elements : node.children.size();
     for (std::size_t index = 0; index < child_count; ++index) {
       collect_expanded_nodes(std::vector<ExpandedNode> {node.children[index]},
-                             include_sensitive_info,
                              max_array_elements,
                              output);
     }
   }
+}
+
+[[nodiscard]] std::string make_unique_lightweight_path(
+    const std::string& raw_path,
+    std::unordered_map<std::string, std::size_t>& path_counts) {
+  const auto count = ++path_counts[raw_path];
+  if (count == 1) {
+    return raw_path;
+  }
+  return raw_path + "#" + std::to_string(count);
 }
 
 }  // namespace
@@ -391,10 +401,7 @@ LightweightExport build_lightweight_export(const ProjectModel& model, const Expo
   } else {
     nodes = model.expanded;
   }
-  collect_expanded_nodes(nodes,
-                         options.include_sensitive_info,
-                         options.lightweight_max_array_elements,
-                         document.variables);
+  collect_expanded_nodes(nodes, options.lightweight_max_array_elements, document.variables);
   return document;
 }
 
@@ -403,10 +410,7 @@ LightweightExport build_lightweight_export(const std::vector<ExpandedNode>& node
   LightweightExport document;
   document.source = options.source;
   document.include_sensitive_info = options.include_sensitive_info;
-  collect_expanded_nodes(nodes,
-                         options.include_sensitive_info,
-                         options.lightweight_max_array_elements,
-                         document.variables);
+  collect_expanded_nodes(nodes, options.lightweight_max_array_elements, document.variables);
   return document;
 }
 
@@ -473,10 +477,13 @@ ProjectModel build_lightweight_project_model(const LightweightExport& document,
   ProjectModel model;
   model.file = source_path;
   model.expanded.reserve(document.variables.size());
+  std::unordered_map<std::string, std::size_t> path_counts;
   for (const auto& variable : document.variables) {
     ExpandedNode node;
-    node.path = variable.path.empty() ? variable.name : variable.path;
-    node.display_name = variable.name.empty() ? node.path : variable.name;
+    const auto raw_path = variable.path.empty() ? variable.name : variable.path;
+    // 兼容旧版坏数据：重复 path 会触发 ImGui ID 冲突，这里只改内部 key，不改显示名。
+    node.path = make_unique_lightweight_path(raw_path, path_counts);
+    node.display_name = variable.name.empty() ? raw_path : variable.name;
     node.type_name = variable.type_name;
     node.type_id = "lightweight";
     node.type_kind = TypeKind::Unknown;

@@ -153,6 +153,29 @@ void verify_runtime_only_filtered_by_default() {
   expect_true(results.empty(), "默认不应返回 runtime only 节点");
 }
 
+void verify_duplicate_import_paths_have_distinct_keys() {
+  elf_static_view::LightweightExport document;
+  document.variables.push_back(elf_static_view::LightweightVariableRecord {
+      .path = "root.member",
+      .name = "member",
+      .type_name = "int",
+      .address = 0x5000,
+  });
+  document.variables.push_back(elf_static_view::LightweightVariableRecord {
+      .path = "root.member",
+      .name = "member",
+      .type_name = "int",
+      .address = 0x5004,
+  });
+
+  const auto model = elf_static_view::build_lightweight_project_model(document, "legacy-lightweight.esv");
+  const auto results = elf_static_view::query_static_addresses(model);
+
+  expect_true(results.size() == 2, "重复精简路径导入后应保留两个可查询节点");
+  expect_true(find_result(results, "root.member") != nullptr, "首个重复路径应保持原始查询 key");
+  expect_true(find_result(results, "root.member#2") != nullptr, "后续重复路径应使用稳定兼容查询 key");
+}
+
 void verify_session_cache_reuse() {
   const auto model = make_model();
 
@@ -178,6 +201,7 @@ int main() {
     verify_comma_name_query_and_path_rules();
     verify_array_expansion();
     verify_runtime_only_filtered_by_default();
+    verify_duplicate_import_paths_have_distinct_keys();
     verify_session_cache_reuse();
     return 0;
   } catch (const std::exception& error) {

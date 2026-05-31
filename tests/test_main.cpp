@@ -236,6 +236,14 @@ find_expanded_path(const std::vector<elf_static_view::ExpandedNode>& nodes,
   return find_expanded_path(model.expanded, expected_path) != nullptr;
 }
 
+[[nodiscard]] bool static_address_result_exists(
+    const std::vector<elf_static_view::StaticAddressResult>& results,
+    const std::string& expected_key) {
+  return std::any_of(results.begin(), results.end(), [&](const auto& result) {
+    return result.key == expected_key;
+  });
+}
+
 [[nodiscard]] bool contains_lazy_node(const std::vector<elf_static_view::ExpandedNode>& nodes) {
   for (const auto& node : nodes) {
     if (node.children_lazy || contains_lazy_node(node.children)) {
@@ -2879,7 +2887,7 @@ void verify_lightweight_export_round_trip() {
   };
   const auto lightweight = elf_static_view::build_lightweight_export(model, json_options);
   expect_true(lightweight.variables.size() == 1, "精简导出应包含变量记录");
-  expect_true(lightweight.variables.front().path == "demo变量", "脱敏精简导出不应保留源路径");
+  expect_true(lightweight.variables.front().path == "demo变量", "脱敏精简导出应保留变量逻辑路径");
 
   const elf_static_view::ExportDocument json_document {
     elf_static_view::ExportPayloadKind::VariableSummary,
@@ -2956,6 +2964,59 @@ void verify_lightweight_export_expands_nodes_and_limits_arrays() {
   expect_true(unlimited.variables[3].path == "numbers[2]", "不限制时应导出最后一个数组元素");
 }
 
+void verify_lightweight_export_keeps_sanitized_member_paths() {
+  elf_static_view::ProjectModel model;
+
+  elf_static_view::ExpandedNode object_node;
+  object_node.path = "root.object";
+  object_node.display_name = "object";
+  object_node.type_name = "Object";
+  object_node.type_kind = elf_static_view::TypeKind::Struct;
+  object_node.absolute_address = 0x6000;
+
+  elf_static_view::ExpandedNode member_node;
+  member_node.path = "root.object.member";
+  member_node.display_name = "member";
+  member_node.type_name = "int";
+  member_node.type_kind = elf_static_view::TypeKind::Base;
+  member_node.absolute_address = 0x6004;
+  object_node.children.push_back(member_node);
+
+  elf_static_view::ExpandedNode array_node;
+  array_node.path = "root.array";
+  array_node.display_name = "array";
+  array_node.type_name = "int[2]";
+  array_node.type_kind = elf_static_view::TypeKind::Array;
+  array_node.absolute_address = 0x7000;
+
+  for (std::uint64_t index = 0; index < 2; ++index) {
+    elf_static_view::ExpandedNode element_node;
+    element_node.path = "root.array[" + std::to_string(index) + "]";
+    element_node.display_name = "array[" + std::to_string(index) + "]";
+    element_node.type_name = "int";
+    element_node.type_kind = elf_static_view::TypeKind::Base;
+    element_node.absolute_address = 0x7000 + index * 4;
+    array_node.children.push_back(std::move(element_node));
+  }
+
+  model.expanded = {std::move(object_node), std::move(array_node)};
+
+  elf_static_view::ExportOptions options;
+  options.payload_kind = elf_static_view::ExportPayloadKind::VariableSummary;
+  options.include_sensitive_info = false;
+  const auto lightweight = elf_static_view::build_lightweight_export(model, options);
+
+  expect_true(lightweight.variables.size() == 5, "脱敏精简导出应递归收集成员和数组元素");
+  expect_true(lightweight.variables[1].path == "root.object.member",
+              "脱敏精简导出成员路径不应降级为显示名");
+  expect_true(lightweight.variables[3].path == "root.array[0]",
+              "脱敏精简导出数组元素 0 应保留完整逻辑路径");
+  expect_true(lightweight.variables[4].path == "root.array[1]",
+              "脱敏精简导出数组元素 1 应保留完整逻辑路径");
+  expect_true(lightweight.variables[1].name == "member",
+              "脱敏精简导出仍应保留显示名供 UI 展示");
+}
+
 void verify_import_project_data_auto_and_lightweight_model() {
   elf_static_view::LightweightExport lightweight;
   lightweight.variables.push_back(elf_static_view::LightweightVariableRecord {
@@ -2996,6 +3057,38 @@ void verify_import_project_data_auto_and_lightweight_model() {
   const auto query_results = elf_static_view::query_static_addresses(imported_json.snapshot.model);
   expect_true(query_results.size() == 1, "静态地址查询应跳过无地址精简节点");
   expect_true(query_results.front().key == "root.member", "静态地址查询应返回精简节点路径");
+
+  elf_static_view::LightweightExport duplicate_paths;
+  duplicate_paths.variables.push_back(elf_static_view::LightweightVariableRecord {
+      .path = "root.member",
+      .name = "member",
+      .type_name = "int",
+      .address = 0x401000,
+  });
+  duplicate_paths.variables.push_back(elf_static_view::LightweightVariableRecord {
+      .path = "root.member",
+      .name = "member",
+      .type_name = "int",
+      .address = 0x401004,
+  });
+  duplicate_paths.variables.push_back(elf_static_view::LightweightVariableRecord {
+      .path = "root.member",
+      .name = "member",
+      .type_name = "int",
+      .address = 0x401008,
+  });
+  const auto duplicate_model =
+      elf_static_view::build_lightweight_project_model(duplicate_paths, "duplicate-summary.esv");
+  expect_true(duplicate_model.expanded.size() == 3, "重复 path 精简导入不应丢弃节点");
+  expect_true(duplicate_model.expanded[0].path == "root.member", "首个重复 path 应保持原样");
+  expect_true(duplicate_model.expanded[1].path == "root.member#2", "第二个重复 path 应追加兼容后缀");
+  expect_true(duplicate_model.expanded[2].path == "root.member#3", "第三个重复 path 应追加兼容后缀");
+  expect_true(duplicate_model.expanded[1].display_name == "member",
+              "重复 path 去重不应改变用户看到的显示名");
+  const auto duplicate_results = elf_static_view::query_static_addresses(duplicate_model);
+  expect_true(duplicate_results.size() == 3, "静态地址查询应返回重复节点各自的唯一 key");
+  expect_true(static_address_result_exists(duplicate_results, "root.member#2"),
+              "静态地址查询应能返回第二个重复节点的兼容 key");
 
   elf_static_view::ExportOptions binary_options;
   binary_options.format = elf_static_view::ExportFormat::BinaryPrivate;
@@ -3543,6 +3636,7 @@ int main() {
     verify_snapshot_export_redaction();
     verify_lightweight_export_round_trip();
     verify_lightweight_export_expands_nodes_and_limits_arrays();
+    verify_lightweight_export_keeps_sanitized_member_paths();
     verify_import_project_data_auto_and_lightweight_model();
     verify_ui_config_round_trip();
     verify_version_check_resolution();
