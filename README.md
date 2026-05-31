@@ -102,14 +102,20 @@ CLI 支持两个主要命令：
 
 ## GUI 导出
 
-GUI 的“文件 / 导出数据...”会打开统一导出选项对话框，四个选项彼此独立：
+GUI 的“文件 / 导出数据...”会打开统一导出选项对话框，五个选项彼此独立：
 
 - 导出格式：易读 JSON、紧凑 JSON、私有二进制
 - 数据来源：完整模型、当前筛选结果
 - 导出内容：完整快照、精简变量
 - 敏感信息：是否包含源文件路径、编译单元路径和编译器指纹
+- 精简数组元素上限：默认导出前 `1024` 个元素，`0` 表示不限制；父数组记录始终保留
 
-精简变量只保留变量路径或名称、类型名和地址，适合把本仓库作为第三方依赖时传递较小的数据文件。私有二进制格式使用版本化容器，供 `elf_static_view::core` 的导入接口解析。
+精简变量只保留变量路径或名称、类型名和地址，导出时会展开数组元素、结构体/类/union 成员、基类和嵌套成员，适合把本仓库作为第三方依赖时传递较小的数据文件。私有二进制格式使用版本化容器，供 `elf_static_view::core` 的导入接口解析。
+
+GUI 的“文件 / 导入数据...”会自动识别 `.esv`、`.json` 或改名后的导出文件：
+
+- 完整快照会恢复为快照模型，兼容旧版 JSON 快照
+- 精简变量会恢复为可筛选的轻量展开树；无地址记录仍可见，但不会参与静态地址查询
 
 ## 第三方接入
 
@@ -126,6 +132,9 @@ if (document.payload_kind == elf_static_view::ExportPayloadKind::VariableSummary
   const auto& data = std::get<elf_static_view::LightweightExport>(document.payload);
   // data.variables: path/name/type_name/address
 }
+
+// 已读取到内存的 .esv/.json 文件可用自动识别入口：
+auto imported = elf_static_view::import_project_data_bytes(file_bytes, "snapshot.esv");
 ```
 
 ## 配置文件
@@ -144,6 +153,9 @@ copy:
 ui:
   refresh_rate: 60
 
+export:
+  lightweight_max_array_elements: 1024
+
 address_bias:
   write_back: false
 ```
@@ -155,6 +167,7 @@ address_bias:
 - `copy.address_base`：复制地址时使用 `hex`、`dec`、`oct`、`bin`
 - `copy.strip_hex_prefix`：十六进制复制时是否去掉 `0x`
 - `ui.refresh_rate`：界面刷新频率
+- `export.lightweight_max_array_elements`：精简变量导出时每个数组最多展开多少元素，默认 `1024`，`0` 表示不限制
 - `address_bias.write_back`：是否将地址偏移写回配置
 - `load_policy.enable_background_loading`：GUI 打开 ELF 时是否后台加载，默认开启
 - `load_policy.default_static_storage_only`：是否默认只保留静态存储变量，默认开启

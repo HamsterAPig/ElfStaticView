@@ -1,5 +1,6 @@
 #include "elf_static_view/project.hpp"
 
+#include "analysis/expander.hpp"
 #include "analysis/model_utils.hpp"
 
 #include <yaml-cpp/yaml.h>
@@ -20,6 +21,7 @@ namespace {
 
 constexpr std::array<char, 8> kBinaryMagic {'E', 'S', 'V', 'E', 'X', 'P', '0', '1'};
 constexpr std::uint32_t kBinaryVersion = 1;
+constexpr char kLightweightSourceKind[] = "elf-static-view-lightweight";
 
 [[nodiscard]] const char* to_wire_value(const ExportSource value) {
   switch (value) {
@@ -187,23 +189,6 @@ void append_string(std::string& output, const std::string& value) {
   output.append(value);
 }
 
-[[nodiscard]] const TypeNode* find_type_by_id(const ProjectModel& model, const std::string& id) {
-  for (const auto& type : model.types) {
-    if (type.id == id) {
-      return &type;
-    }
-  }
-  return nullptr;
-}
-
-[[nodiscard]] std::string display_type_name(const ProjectModel& model, const TypeRef& type_ref) {
-  const auto* type = find_type_by_id(model, type_ref.id);
-  if (type == nullptr || type->name.empty()) {
-    return type_ref.id;
-  }
-  return type->name;
-}
-
 [[nodiscard]] std::uint8_t binary_source_value(const ExportSource value) {
   return value == ExportSource::CurrentFilteredView ? 1 : 0;
 }
@@ -364,8 +349,14 @@ private:
   return ExportDocument {ExportPayloadKind::VariableSummary, std::move(document)};
 }
 
+[[nodiscard]] bool has_binary_magic(std::string_view bytes) {
+  return bytes.size() >= kBinaryMagic.size() &&
+         std::equal(kBinaryMagic.begin(), kBinaryMagic.end(), bytes.begin());
+}
+
 void collect_expanded_nodes(const std::vector<ExpandedNode>& nodes,
                             const bool include_sensitive_info,
+                            const std::size_t max_array_elements,
                             std::vector<LightweightVariableRecord>& output) {
   for (const auto& node : nodes) {
     LightweightVariableRecord record;
@@ -374,7 +365,16 @@ void collect_expanded_nodes(const std::vector<ExpandedNode>& nodes,
     record.type_name = node.type_name;
     record.address = node.absolute_address;
     output.push_back(std::move(record));
-    collect_expanded_nodes(node.children, include_sensitive_info, output);
+    const bool limit_array_children =
+        node.type_kind == TypeKind::Array && max_array_elements > 0 &&
+        node.children.size() > max_array_elements;
+    const auto child_count = limit_array_children ? max_array_elements : node.children.size();
+    for (std::size_t index = 0; index < child_count; ++index) {
+      collect_expanded_nodes(std::vector<ExpandedNode> {node.children[index]},
+                             include_sensitive_info,
+                             max_array_elements,
+                             output);
+    }
   }
 }
 
@@ -384,14 +384,17 @@ LightweightExport build_lightweight_export(const ProjectModel& model, const Expo
   LightweightExport document;
   document.source = options.source;
   document.include_sensitive_info = options.include_sensitive_info;
-  for (const auto& symbol : model.symbols) {
-    LightweightVariableRecord record;
-    record.path = options.include_sensitive_info ? symbol.id : symbol.name;
-    record.name = symbol.name;
-    record.type_name = display_type_name(model, symbol.type);
-    record.address = symbol.address.absolute_address;
-    document.variables.push_back(std::move(record));
+  std::vector<ExpandedNode> nodes;
+  if (!model.symbols.empty()) {
+    analysis::Expander expander(model.types, 0, false);
+    nodes = expander.build(model.symbols, true, false, std::nullopt);
+  } else {
+    nodes = model.expanded;
   }
+  collect_expanded_nodes(nodes,
+                         options.include_sensitive_info,
+                         options.lightweight_max_array_elements,
+                         document.variables);
   return document;
 }
 
@@ -400,7 +403,10 @@ LightweightExport build_lightweight_export(const std::vector<ExpandedNode>& node
   LightweightExport document;
   document.source = options.source;
   document.include_sensitive_info = options.include_sensitive_info;
-  collect_expanded_nodes(nodes, options.include_sensitive_info, document.variables);
+  collect_expanded_nodes(nodes,
+                         options.include_sensitive_info,
+                         options.lightweight_max_array_elements,
+                         document.variables);
   return document;
 }
 
@@ -437,6 +443,76 @@ ExportDocument parse_export_bytes(const std::string& bytes, const ExportFormat f
     return ExportDocument {payload_kind, parse_lightweight_json(root)};
   }
   return ExportDocument {payload_kind, parse_snapshot_json(bytes)};
+}
+
+ExportDocument parse_export_bytes_auto(const std::string& bytes) {
+  if (has_binary_magic(bytes)) {
+    try {
+      return parse_binary_export(bytes);
+    } catch (const std::exception& error) {
+      throw std::runtime_error(std::string("二进制解析失败: ") + error.what());
+    }
+  }
+
+  try {
+    const auto root = YAML::Load(bytes);
+    const auto payload_kind = parse_payload_kind(root["payload_kind"].as<std::string>("full_snapshot"));
+    if (payload_kind == ExportPayloadKind::VariableSummary) {
+      return ExportDocument {payload_kind, parse_lightweight_json(root)};
+    }
+    return ExportDocument {payload_kind, parse_snapshot_json(bytes)};
+  } catch (const YAML::Exception& error) {
+    throw std::runtime_error(std::string("JSON 解析失败: ") + error.what());
+  } catch (const std::exception& error) {
+    throw std::runtime_error(std::string("格式无法识别: ") + error.what());
+  }
+}
+
+ProjectModel build_lightweight_project_model(const LightweightExport& document,
+                                             const std::string& source_path) {
+  ProjectModel model;
+  model.file = source_path;
+  model.expanded.reserve(document.variables.size());
+  for (const auto& variable : document.variables) {
+    ExpandedNode node;
+    node.path = variable.path.empty() ? variable.name : variable.path;
+    node.display_name = variable.name.empty() ? node.path : variable.name;
+    node.type_name = variable.type_name;
+    node.type_id = "lightweight";
+    node.type_kind = TypeKind::Unknown;
+    node.availability = variable.address.has_value()
+      ? Availability::StaticAddressKnown
+      : Availability::Unavailable;
+    node.absolute_address = variable.address;
+    model.expanded.push_back(std::move(node));
+  }
+  model.metrics.variable_count_before_filter = document.variables.size();
+  model.metrics.variable_count_after_filter = document.variables.size();
+  return model;
+}
+
+ProjectSnapshot build_lightweight_project_snapshot(const LightweightExport& document,
+                                                   const std::string& source_path) {
+  ProjectSnapshot snapshot;
+  snapshot.source_kind = kLightweightSourceKind;
+  snapshot.source_file = source_path;
+  snapshot.model = build_lightweight_project_model(document, source_path);
+  return snapshot;
+}
+
+ImportedProjectData import_project_data_bytes(const std::string& bytes,
+                                              const std::string& source_path) {
+  auto document = parse_export_bytes_auto(bytes);
+  if (document.payload_kind == ExportPayloadKind::VariableSummary) {
+    return ImportedProjectData {
+        ExportPayloadKind::VariableSummary,
+        build_lightweight_project_snapshot(std::get<LightweightExport>(document.payload), source_path),
+    };
+  }
+  return ImportedProjectData {
+      ExportPayloadKind::FullSnapshot,
+      std::get<ProjectSnapshot>(std::move(document.payload)),
+  };
 }
 
 ExportDocument load_export_file(const std::string& file_path, const ExportFormat format) {

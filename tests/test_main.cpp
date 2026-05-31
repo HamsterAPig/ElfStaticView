@@ -2917,6 +2917,112 @@ void verify_lightweight_export_round_trip() {
               "二进制导入应保留类型名");
 }
 
+void verify_lightweight_export_expands_nodes_and_limits_arrays() {
+  elf_static_view::ProjectModel model;
+  elf_static_view::TypeNode element_type;
+  element_type.id = "type@int";
+  element_type.name = "int";
+  element_type.byte_size = 4;
+  model.types.push_back(element_type);
+
+  elf_static_view::TypeNode array_type;
+  array_type.id = "type@array";
+  array_type.kind = elf_static_view::TypeKind::Array;
+  array_type.element_type = elf_static_view::TypeRef {"type@int"};
+  array_type.array_dimensions = {3};
+  array_type.byte_size = 12;
+  model.types.push_back(array_type);
+
+  elf_static_view::VariableRecord symbol;
+  symbol.id = "sym@array";
+  symbol.name = "numbers";
+  symbol.type.id = "type@array";
+  symbol.availability = elf_static_view::Availability::StaticAddressKnown;
+  symbol.address.absolute_address = 0x5000;
+  model.symbols.push_back(symbol);
+
+  elf_static_view::ExportOptions limited_options;
+  limited_options.payload_kind = elf_static_view::ExportPayloadKind::VariableSummary;
+  limited_options.lightweight_max_array_elements = 2;
+  const auto limited = elf_static_view::build_lightweight_export(model, limited_options);
+  expect_true(limited.variables.size() == 3, "精简导出应包含父数组和前 N 个数组元素");
+  expect_true(limited.variables[0].path == "numbers", "精简导出应保留父数组路径");
+  expect_true(limited.variables[1].path == "numbers[0]", "精简导出应展开数组元素 0");
+  expect_true(limited.variables[2].path == "numbers[1]", "精简导出应按上限截断数组元素");
+
+  limited_options.lightweight_max_array_elements = 0;
+  const auto unlimited = elf_static_view::build_lightweight_export(model, limited_options);
+  expect_true(unlimited.variables.size() == 4, "数组上限为 0 时应不限制展开元素");
+  expect_true(unlimited.variables[3].path == "numbers[2]", "不限制时应导出最后一个数组元素");
+}
+
+void verify_import_project_data_auto_and_lightweight_model() {
+  elf_static_view::LightweightExport lightweight;
+  lightweight.variables.push_back(elf_static_view::LightweightVariableRecord {
+      .path = "root.member",
+      .name = "member",
+      .type_name = "int",
+      .address = 0x401000,
+  });
+  lightweight.variables.push_back(elf_static_view::LightweightVariableRecord {
+      .path = "root.no_address",
+      .name = "no_address",
+      .type_name = "char",
+      .address = std::nullopt,
+  });
+
+  elf_static_view::ExportOptions json_options;
+  json_options.format = elf_static_view::ExportFormat::JsonCompact;
+  json_options.payload_kind = elf_static_view::ExportPayloadKind::VariableSummary;
+  const elf_static_view::ExportDocument json_document {
+    elf_static_view::ExportPayloadKind::VariableSummary,
+    lightweight,
+  };
+  const auto compact_json = elf_static_view::render_export_document(json_document, json_options);
+  const auto imported_json = elf_static_view::import_project_data_bytes(compact_json, "summary.json");
+  expect_true(imported_json.payload_kind == elf_static_view::ExportPayloadKind::VariableSummary,
+              "自动导入应识别紧凑 JSON 精简变量");
+  expect_true(imported_json.snapshot.source_kind == "elf-static-view-lightweight",
+              "精简导入应标记轻量来源");
+  expect_true(imported_json.snapshot.model.expanded.size() == 2,
+              "精简导入应构造展开节点");
+  expect_true(imported_json.snapshot.model.expanded.front().availability ==
+                elf_static_view::Availability::StaticAddressKnown,
+              "带地址精简节点应可参与静态地址查询");
+  expect_true(imported_json.snapshot.model.expanded.back().availability ==
+                elf_static_view::Availability::Unavailable,
+              "无地址精简节点应保留但不参与静态地址查询");
+
+  const auto query_results = elf_static_view::query_static_addresses(imported_json.snapshot.model);
+  expect_true(query_results.size() == 1, "静态地址查询应跳过无地址精简节点");
+  expect_true(query_results.front().key == "root.member", "静态地址查询应返回精简节点路径");
+
+  elf_static_view::ExportOptions binary_options;
+  binary_options.format = elf_static_view::ExportFormat::BinaryPrivate;
+  binary_options.payload_kind = elf_static_view::ExportPayloadKind::VariableSummary;
+  const auto binary = elf_static_view::render_export_document(json_document, binary_options);
+  const auto imported_binary = elf_static_view::import_project_data_bytes(binary, "summary.esv");
+  expect_true(imported_binary.payload_kind == elf_static_view::ExportPayloadKind::VariableSummary,
+              "自动导入应识别私有二进制精简变量");
+
+  elf_static_view::ProjectSnapshot snapshot;
+  snapshot.source_file = "old.elf";
+  snapshot.model.file = "old.elf";
+  const elf_static_view::ExportDocument snapshot_document {
+    elf_static_view::ExportPayloadKind::FullSnapshot,
+    snapshot,
+  };
+  elf_static_view::ExportOptions snapshot_options;
+  snapshot_options.format = elf_static_view::ExportFormat::BinaryPrivate;
+  snapshot_options.payload_kind = elf_static_view::ExportPayloadKind::FullSnapshot;
+  const auto binary_snapshot = elf_static_view::render_export_document(snapshot_document, snapshot_options);
+  const auto imported_snapshot = elf_static_view::import_project_data_bytes(binary_snapshot, "snapshot.esv");
+  expect_true(imported_snapshot.payload_kind == elf_static_view::ExportPayloadKind::FullSnapshot,
+              "自动导入应识别私有二进制完整快照");
+  expect_true(imported_snapshot.snapshot.source_file == "old.elf",
+              "完整快照导入应保留快照语义");
+}
+
 void verify_ui_config_round_trip() {
   const auto temp_root = std::filesystem::temp_directory_path() /
                          ("elf-static-view-config-round-trip-" +
@@ -3436,6 +3542,8 @@ int main() {
     verify_c2000_elf_metadata();
     verify_snapshot_export_redaction();
     verify_lightweight_export_round_trip();
+    verify_lightweight_export_expands_nodes_and_limits_arrays();
+    verify_import_project_data_auto_and_lightweight_model();
     verify_ui_config_round_trip();
     verify_version_check_resolution();
     verify_version_response_parsing();

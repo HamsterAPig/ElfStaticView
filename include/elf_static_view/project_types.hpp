@@ -295,6 +295,7 @@ struct ExportOptions {
   ExportSource source = ExportSource::FullModel;
   ExportPayloadKind payload_kind = ExportPayloadKind::FullSnapshot;
   bool include_sensitive_info = true;
+  std::size_t lightweight_max_array_elements = 1024;
 };
 
 struct LightweightVariableRecord {
@@ -314,6 +315,11 @@ struct LightweightExport {
 struct ExportDocument {
   ExportPayloadKind payload_kind = ExportPayloadKind::FullSnapshot;
   std::variant<ProjectSnapshot, LightweightExport> payload;
+};
+
+struct ImportedProjectData {
+  ExportPayloadKind payload_kind = ExportPayloadKind::FullSnapshot;
+  ProjectSnapshot snapshot;
 };
 
 std::string to_string(AddressKind value);

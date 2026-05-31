@@ -56,6 +56,17 @@ private:
 [[nodiscard]] ExportDocument parse_export_bytes(
     const std::string& bytes,
     ExportFormat format);
+[[nodiscard]] ExportDocument parse_export_bytes_auto(
+    const std::string& bytes);
+[[nodiscard]] ProjectModel build_lightweight_project_model(
+    const LightweightExport& document,
+    const std::string& source_path = {});
+[[nodiscard]] ProjectSnapshot build_lightweight_project_snapshot(
+    const LightweightExport& document,
+    const std::string& source_path = {});
+[[nodiscard]] ImportedProjectData import_project_data_bytes(
+    const std::string& bytes,
+    const std::string& source_path = {});
 [[nodiscard]] ExportDocument load_export_file(
     const std::string& file_path,
     ExportFormat format);

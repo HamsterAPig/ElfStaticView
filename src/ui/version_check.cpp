@@ -537,6 +537,10 @@ void load_app_config(AppState& state, const std::filesystem::path& executable_pa
     }
   }
 
+  const YAML::Node export_config = root["export"];
+  state.export_dialog.options.lightweight_max_array_elements =
+    read_yaml_size_t(export_config, "lightweight_max_array_elements", 1024);
+
   const YAML::Node address_bias = root["address_bias"];
   state.persist_address_bias_to_config = read_yaml_bool(address_bias, "write_back", false);
   if (!state.persist_address_bias_to_config) {
@@ -586,6 +590,8 @@ void save_app_config(const AppState& state) {
   root["load_policy"]["max_expand_depth"] = state.load_policy.expand_depth;
   root["load_policy"]["lazy_expand_children"] = state.load_policy.lazy_expand_children;
   root["load_policy"]["enable_parse_metrics"] = state.load_policy.enable_parse_metrics;
+  root["export"]["lightweight_max_array_elements"] =
+    state.export_dialog.options.lightweight_max_array_elements;
 
   YAML::Node address_bias = root["address_bias"];
   address_bias["write_back"] = state.persist_address_bias_to_config;

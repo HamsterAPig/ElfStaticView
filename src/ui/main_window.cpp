@@ -274,7 +274,7 @@ void import_snapshot_from_dialog(AppState& state) {
     return;
   }
   state.pending_import_snapshot_path = file_path.value();
-  log_info(state, "已选择 JSON 快照，准备后台导入: " + file_path.value());
+  log_info(state, "已选择数据文件，准备后台导入: " + file_path.value());
 }
 
 void export_snapshot_from_dialog(AppState& state) {
@@ -334,7 +334,7 @@ void render_menu_bar(AppState& state) {
     if (state.import_snapshot_task.status == UiTaskStatus::Running) {
       ImGui::BeginDisabled();
     }
-    if (ImGui::MenuItem("导入 JSON...")) {
+    if (ImGui::MenuItem("导入数据...")) {
       try {
         import_snapshot_from_dialog(state);
       } catch (const std::exception& error) {
@@ -714,6 +714,14 @@ void render_export_dialog(AppState& state) {
     state.json_preview_dirty = true;
   }
   ImGui::TextWrapped("敏感信息包含源文件路径、编译单元路径和编译器指纹；变量名、类型名、地址仍会导出。");
+  int max_array_elements = static_cast<int>(options.lightweight_max_array_elements);
+  if (ImGui::InputInt("精简数组元素上限", &max_array_elements)) {
+    if (max_array_elements < 0) {
+      max_array_elements = 0;
+    }
+    options.lightweight_max_array_elements = static_cast<std::size_t>(max_array_elements);
+  }
+  ImGui::TextWrapped("仅影响精简变量导出；0 表示不限制，父数组记录始终保留。");
 
   ImGui::Separator();
   if (ImGui::Button("导出")) {

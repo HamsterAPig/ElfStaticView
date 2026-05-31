@@ -1,5 +1,6 @@
 #include "ui/application.hpp"
 
+#include "analysis/expander.hpp"
 #include "elf_static_view/project.hpp"
 #include "logging/logger.hpp"
 #include "platform/utf8.hpp"
@@ -66,17 +67,40 @@ void write_all_text(const std::string& path, const std::string& content) {
   }
 }
 
+void expand_lazy_descendants(ExpandedNode& node, const analysis::Expander& expander) {
+  if (node.children_lazy) {
+    node.children = expander.expand_children(node);
+    node.children_lazy = false;
+  }
+  for (auto& child : node.children) {
+    expand_lazy_descendants(child, expander);
+  }
+}
+
 [[nodiscard]] std::optional<ExpandedNode> filter_export_node(
     const ExpandedNode& node,
+    const AppState& state,
+    const analysis::Expander& expander,
     const std::unordered_set<std::string>& visible_paths) {
   if (visible_paths.find(node.path) == visible_paths.end()) {
     return std::nullopt;
   }
 
   ExpandedNode filtered = node;
+  std::vector<ExpandedNode> children = node.children;
+  if (node.children_lazy) {
+    children = expander.expand_children(node);
+    filtered.children_lazy = false;
+    filtered.children = children;
+  }
+  if (matches_filters(state, node)) {
+    // 当前筛选命中父节点时，精简导出必须带上完整可推导子树，而不是只带 UI 已展开部分。
+    expand_lazy_descendants(filtered, expander);
+    return filtered;
+  }
   filtered.children.clear();
-  for (const auto& child : node.children) {
-    auto filtered_child = filter_export_node(child, visible_paths);
+  for (const auto& child : children) {
+    auto filtered_child = filter_export_node(child, state, expander, visible_paths);
     if (filtered_child.has_value()) {
       filtered.children.push_back(std::move(filtered_child.value()));
     }
@@ -93,8 +117,11 @@ void write_all_text(const std::string& path, const std::string& content) {
   }
 
   std::vector<ExpandedNode> roots;
+  analysis::Expander expander(state.project_model->types,
+                              state.load_policy.expand_depth,
+                              false);
   for (const auto& node : state.project_model->expanded) {
-    auto filtered = filter_export_node(node, state.filters.cache.visible_paths);
+    auto filtered = filter_export_node(node, state, expander, state.filters.cache.visible_paths);
     if (filtered.has_value()) {
       roots.push_back(std::move(filtered.value()));
     }
@@ -380,6 +407,10 @@ void Application::load_file_into_state(const std::string& path) {
     start_snapshot_import(path);
     return;
   }
+  if (std::string_view(path).ends_with(".esv")) {
+    start_snapshot_import(path);
+    return;
+  }
 
   start_elf_load(path);
 }
@@ -631,6 +662,7 @@ void Application::poll_background_tasks() {
       ExportSource::FullModel,
       ExportPayloadKind::FullSnapshot,
       state_.export_sensitive_info,
+      1024,
     });
     start_snapshot_export(*state_.pending_export_snapshot_path, options);
     state_.pending_export_snapshot_path.reset();
@@ -653,11 +685,11 @@ void Application::poll_background_tasks() {
   if (const auto imported = task_runner_.poll(kTaskSnapshotImport); imported.has_value()) {
     if (imported->success) {
       try {
-        const auto snapshot = parse_snapshot_json(imported->success_value);
         const std::string snapshot_path = state_.import_snapshot_task.detail;
-        set_loaded_snapshot(state_, std::move(snapshot), snapshot_path);
-        finish_ui_task(state_.import_snapshot_task, imported->id, "已导入 JSON 快照");
-        log_info(state_, "已导入 JSON 快照: " + snapshot_path);
+        auto imported_data = import_project_data_bytes(imported->success_value, snapshot_path);
+        set_loaded_snapshot(state_, std::move(imported_data.snapshot), snapshot_path);
+        finish_ui_task(state_.import_snapshot_task, imported->id, "已导入数据文件");
+        log_info(state_, "已导入数据文件: " + snapshot_path);
         state_.json_preview_dirty = true;
       } catch (const std::exception& error) {
         fail_ui_task(state_.import_snapshot_task, imported->id, error.what());

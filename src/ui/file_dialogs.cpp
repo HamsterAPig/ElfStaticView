@@ -54,9 +54,9 @@ std::optional<std::string> open_elf_file_dialog() {
 std::optional<std::string> open_snapshot_file_dialog() {
 #if defined(_WIN32)
   return run_dialog(OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST,
-                    L"导入 JSON 快照",
-                    L"JSON 文件\0*.json\0所有文件\0*.*\0",
-                    L"json",
+                    L"导入数据",
+                    L"ElfStaticView 导出文件\0*.esv;*.json\0JSON 文件\0*.json\0所有文件\0*.*\0",
+                    L"",
                     false);
 #else
   return std::nullopt;
