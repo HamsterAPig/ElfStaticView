@@ -323,7 +323,6 @@ using Sig8Map = std::unordered_map<std::string, Dwarf_Off>;
         break;
       }
       const auto version = read_u16_le(data, offset + 4);
-      const auto type_offset = read_u32_le(data, offset + 16);
       if (version == 4) {
         Dwarf_Sig8 signature {};
         // DWARF4 type unit 头布局：
