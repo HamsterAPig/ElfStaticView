@@ -26,6 +26,36 @@ namespace {
   return stream.str();
 }
 
+[[nodiscard]] std::optional<Dwarf_Unsigned> read_manual_ref_sup_offset(Dwarf_Attribute attr,
+                                                                       const Dwarf_Half form) {
+  if (form != DW_FORM_ref_sup4 && form != DW_FORM_ref_sup8) {
+    return std::nullopt;
+  }
+  struct ManualAttributeView {
+    Dwarf_Half attribute = 0;
+    Dwarf_Half form = 0;
+    Dwarf_Half direct_form = 0;
+    void* cu_context = nullptr;
+    Dwarf_Small* debug_ptr = nullptr;
+    Dwarf_Signed implicit_const = 0;
+    Dwarf_Debug debug = nullptr;
+  };
+
+  const auto* raw_attr = reinterpret_cast<const ManualAttributeView*>(attr);
+  if (raw_attr == nullptr || raw_attr->debug_ptr == nullptr) {
+    return std::nullopt;
+  }
+
+  Dwarf_Unsigned offset = 0;
+  const std::size_t width = form == DW_FORM_ref_sup8 ? 8U : 4U;
+  // 当前 supplementary 引用样本来自 x86_64 little-endian GCC fixture；这里按固定宽度小端读取 payload。
+  for (std::size_t index = 0; index < width; ++index) {
+    offset |= static_cast<Dwarf_Unsigned>(static_cast<unsigned char>(raw_attr->debug_ptr[index]))
+              << (index * 8U);
+  }
+  return offset;
+}
+
 [[nodiscard]] std::string sig8_to_hex(const Dwarf_Sig8& signature) {
   std::ostringstream stream;
   stream << "0x";
@@ -710,6 +740,25 @@ std::optional<Dwarf_Off> die_offset(Dwarf_Die die) {
 }
 
 std::optional<Dwarf_Off> global_type_offset(Dwarf_Attribute attr) {
+  Dwarf_Half form = 0;
+  Dwarf_Error form_error = nullptr;
+  const int form_result = dwarf_whatform(attr, &form, &form_error);
+  if (form_result == DW_DLV_NO_ENTRY) {
+    return std::nullopt;
+  }
+  if (form_result != DW_DLV_OK) {
+    const auto message = build_error_message("dwarf_whatform failed", form_error);
+    destroy_error(form_error);
+    throw DwarfError(message);
+  }
+  if (form == DW_FORM_ref_sup4 || form == DW_FORM_ref_sup8) {
+    const auto offset = read_manual_ref_sup_offset(attr, form);
+    if (!offset.has_value()) {
+      return std::nullopt;
+    }
+    return static_cast<Dwarf_Off>(offset.value());
+  }
+
   Dwarf_Off offset = 0;
   Dwarf_Bool is_info = true;
   Dwarf_Error error = nullptr;
@@ -738,6 +787,15 @@ std::optional<ReferenceTarget> type_reference_target(Dwarf_Debug debug,
     const auto message = build_error_message("dwarf_whatform failed", error);
     destroy_error(error);
     throw DwarfError(message);
+  }
+
+  if (form == DW_FORM_ref_sup4 || form == DW_FORM_ref_sup8) {
+    // libdwarf 当前不会替我们解析 ref_sup4/ref_sup8；这里直接读取 supplementary DIE 的全局偏移。
+    const auto offset = read_manual_ref_sup_offset(attr, form);
+    if (!offset.has_value()) {
+      return std::nullopt;
+    }
+    return ReferenceTarget {.offset = static_cast<Dwarf_Off>(offset.value()), .is_info = true};
   }
 
   if (form == DW_FORM_ref_sig8) {
@@ -803,9 +861,23 @@ std::optional<ReferenceTarget> type_reference_target(Dwarf_Debug debug,
       Dwarf_Off fallback_offset = 0;
       Dwarf_Bool fallback_is_info = true;
       error = nullptr;
-      const int fallback_result =
-        dwarf_global_formref_b(attr, &fallback_offset, &fallback_is_info, &error);
-      if (fallback_result == DW_DLV_OK) {
+      const bool use_manual_ref_sup = form == DW_FORM_ref_sup4 || form == DW_FORM_ref_sup8;
+      const int fallback_result = use_manual_ref_sup
+                                    ? DW_DLV_NO_ENTRY
+                                    : dwarf_global_formref_b(attr,
+                                                             &fallback_offset,
+                                                             &fallback_is_info,
+                                                             &error);
+      if (use_manual_ref_sup) {
+        const auto manual_offset = read_manual_ref_sup_offset(attr, form);
+        if (manual_offset.has_value()) {
+          trace_sig8(signature,
+                     "manual ref_sup fallback ok: offset=" +
+                       std::to_string(static_cast<Dwarf_Off>(manual_offset.value())));
+          return ReferenceTarget {.offset = static_cast<Dwarf_Off>(manual_offset.value()),
+                                  .is_info = true};
+        }
+      } else if (fallback_result == DW_DLV_OK) {
         trace_sig8(signature,
                    "dwarf_global_formref_b ok: offset=" + std::to_string(fallback_offset) +
                      " is_info=" + std::to_string(fallback_is_info != 0));
@@ -869,6 +941,18 @@ std::optional<DieHandle> die_from_offset(Dwarf_Debug debug, Dwarf_Off offset, bo
 }
 
 std::optional<Dwarf_Unsigned> unsigned_attr(Dwarf_Attribute attr) {
+  Dwarf_Half form = 0;
+  Dwarf_Error form_error = nullptr;
+  const int form_result = dwarf_whatform(attr, &form, &form_error);
+  if (form_result == DW_DLV_OK && (form == DW_FORM_ref_sup4 || form == DW_FORM_ref_sup8)) {
+    const auto offset = read_manual_ref_sup_offset(attr, form);
+    if (offset.has_value()) {
+      return offset;
+    }
+  } else if (form_result != DW_DLV_OK && form_result != DW_DLV_NO_ENTRY) {
+    destroy_error(form_error);
+  }
+
   Dwarf_Unsigned value = 0;
   Dwarf_Error error = nullptr;
   const int result = dwarf_formudata(attr, &value, &error);

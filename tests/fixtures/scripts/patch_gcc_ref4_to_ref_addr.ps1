@@ -39,7 +39,7 @@ try {
 
   # 只把第一个 CU 里的 sup_value: DW_AT_type 改成 DW_FORM_ref_addr(0x10)。
   # 这个引用目标本来就是 .debug_info 全局偏移 0x77，payload 数值无需改写。
-  $abbrev[$matchIndex + 13] = 0x10
+  $abbrev[$matchIndex + 12] = 0x10
   [System.IO.File]::WriteAllBytes($abbrevPath, $abbrev)
 
   & $ObjcopyPath --update-section ".debug_abbrev=$abbrevPath" $InputPath $OutputPath

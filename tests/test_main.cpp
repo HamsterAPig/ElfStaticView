@@ -573,13 +573,18 @@ void verify_gcc_ref_sup4_fixture() {
                                   .expand_depth = 8});
 
   const auto output = elf_static_view::render_dump_text(model);
-  expect_contains(output, "sup_value [Unavailable] SupTarget",
+  // ref_sup4 只替换类型引用形式，变量位置表达式保持原样，因此 sup_value 仍应保留静态地址。
+  expect_contains(output, "sup_value [StaticAddressKnown] SupTarget",
                   "ref_sup4 fixture 应保留 sup_value 的 SupTarget 类型");
   expect_contains(output, "sup_value.value [StaticLayoutKnown] int",
                   "ref_sup4 fixture 应继续解析成员 int 类型");
 }
 
 void verify_gcc_ref_addr_fixture() {
+  verify_abbrev_attribute_form_via_dwarfdump(ELF_STATIC_VIEW_GCC_DWARF5_REF_ADDR_FIXTURE_PATH,
+                                             "DW_AT_type",
+                                             "DW_FORM_ref_addr",
+                                             "ref_addr fixture");
   elf_static_view::ProjectLoader loader;
   const auto model = loader.dump(ELF_STATIC_VIEW_GCC_DWARF5_REF_ADDR_FIXTURE_PATH,
                                  {.include_runtime_only = true,
@@ -588,7 +593,7 @@ void verify_gcc_ref_addr_fixture() {
                                   .expand_depth = 8});
 
   const auto output = elf_static_view::render_dump_text(model);
-  expect_contains(output, "sup_value [Unavailable] SupTarget",
+  expect_contains(output, "sup_value [StaticAddressKnown] SupTarget",
                   "ref_addr fixture 应保留 sup_value 的 SupTarget 类型");
   expect_contains(output, "sup_value.value [StaticLayoutKnown] int",
                   "ref_addr fixture 应继续解析成员 int 类型");
@@ -620,7 +625,7 @@ void verify_gcc_ref_sup8_fixture() {
                                   .expand_depth = 8});
 
   const auto output = elf_static_view::render_dump_text(model);
-  expect_contains(output, "sup_value [Unavailable] SupTarget",
+  expect_contains(output, "sup_value [StaticAddressKnown] SupTarget",
                   "ref_sup8 fixture 应保留 sup_value 的 SupTarget 类型");
   expect_contains(output, "sup_value.value [StaticLayoutKnown] int",
                   "ref_sup8 fixture 应继续解析成员 int 类型");

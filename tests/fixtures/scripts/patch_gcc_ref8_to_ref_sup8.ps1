@@ -37,9 +37,9 @@ try {
     throw "未找到 gcc variable ref8 abbrev 模板"
   }
 
-  # [5] DW_TAG_variable 的 DW_AT_type form 位于 pattern 内第 13 字节。
-  # 把 DW_FORM_ref8(0x14) 改成 DW_FORM_ref_sup8(0x2b)，宽度保持 8 字节。
-  $abbrev[$matchIndex + 13] = 0x2b
+  # [5] DW_TAG_variable 的 DW_AT_type form 位于 pattern 内第 12 字节。
+  # 把 DW_FORM_ref8(0x14) 改成 DW_FORM_ref_sup8(0x24)，宽度保持 8 字节。
+  $abbrev[$matchIndex + 12] = 0x24
   [System.IO.File]::WriteAllBytes($abbrevPath, $abbrev)
 
   & $ObjcopyPath --update-section ".debug_abbrev=$abbrevPath" $InputPath $OutputPath
