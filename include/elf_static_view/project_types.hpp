@@ -263,6 +263,8 @@ struct StaticAddressQueryOptions {
   std::string path_rules_text;
   bool include_runtime_only = false;
   bool only_static_known = true;
+  // 默认保持旧调用稳定；开启后先展开 obj.member 候选，再执行名称和路径筛选。
+  bool flatten_composite_members = false;
   std::size_t max_array_elements = 1024;
 };
 

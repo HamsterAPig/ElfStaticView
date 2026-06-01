@@ -36,10 +36,49 @@ void expect_true(const bool condition, const std::string& message) {
   return type;
 }
 
+[[nodiscard]] elf_static_view::TypeNode make_int_array_type() {
+  elf_static_view::TypeNode type;
+  type.id = "type:int_array";
+  type.kind = elf_static_view::TypeKind::Array;
+  type.name = "int[3]";
+  type.byte_size = 12;
+  type.element_type = elf_static_view::TypeRef {"type:int"};
+  type.array_dimensions = {3};
+  return type;
+}
+
+[[nodiscard]] elf_static_view::TypeNode make_sample_type() {
+  elf_static_view::TypeNode type;
+  type.id = "type:struct";
+  type.kind = elf_static_view::TypeKind::Struct;
+  type.name = "Sample";
+  type.byte_size = 16;
+
+  elf_static_view::TypeMember name_member;
+  name_member.name = "name";
+  name_member.type = elf_static_view::TypeRef {"type:int"};
+  name_member.address.relative_offset = 0;
+  name_member.availability = elf_static_view::Availability::StaticAddressKnown;
+  name_member.byte_size = 4;
+  type.members.push_back(std::move(name_member));
+
+  elf_static_view::TypeMember values_member;
+  values_member.name = "values";
+  values_member.type = elf_static_view::TypeRef {"type:int_array"};
+  values_member.address.relative_offset = 4;
+  values_member.availability = elf_static_view::Availability::StaticAddressKnown;
+  values_member.byte_size = 12;
+  type.members.push_back(std::move(values_member));
+
+  return type;
+}
+
 [[nodiscard]] elf_static_view::ProjectModel make_model() {
   elf_static_view::ProjectModel model;
   model.file = "memory-model";
   model.types.push_back(make_int_type());
+  model.types.push_back(make_int_array_type());
+  model.types.push_back(make_sample_type());
 
   elf_static_view::ExpandedNode global_object;
   global_object.path = "demo.global_object";
@@ -50,6 +89,21 @@ void expect_true(const bool condition, const std::string& message) {
   global_object.availability = elf_static_view::Availability::StaticAddressKnown;
   global_object.absolute_address = 0x1000;
   global_object.children_lazy = true;
+
+  elf_static_view::ExpandedNode first_person;
+  first_person.path = "demo.a_p";
+  first_person.display_name = "a_p";
+  first_person.type_name = "Sample";
+  first_person.type_id = "type:struct";
+  first_person.type_kind = elf_static_view::TypeKind::Struct;
+  first_person.availability = elf_static_view::Availability::StaticAddressKnown;
+  first_person.absolute_address = 0x1100;
+  first_person.children_lazy = true;
+
+  elf_static_view::ExpandedNode second_person = first_person;
+  second_person.path = "demo.b_p";
+  second_person.display_name = "b_p";
+  second_person.absolute_address = 0x1200;
 
   elf_static_view::ExpandedNode counter;
   counter.path = "demo::Derived.counter";
@@ -101,7 +155,7 @@ void expect_true(const bool condition, const std::string& message) {
   tls_value.availability = elf_static_view::Availability::RuntimeOnly;
   tls_value.absolute_address = 0x4000;
 
-  model.expanded = {global_object, counter, shared, array, tls_value};
+  model.expanded = {global_object, first_person, second_person, counter, shared, array, tls_value};
   return model;
 }
 
@@ -141,6 +195,60 @@ void verify_array_expansion() {
 
   expect_true(find_result(results, "root.array[0]") != nullptr, "数组查询应返回首元素");
   expect_true(find_result(results, "root.array[1]") != nullptr, "数组查询应返回后续元素");
+}
+
+void verify_composite_members_are_not_flattened_by_default() {
+  const auto model = make_model();
+
+  elf_static_view::StaticAddressQueryOptions options;
+  options.name_query_text = "global_object";
+  const auto results = elf_static_view::query_static_addresses(model, options);
+
+  expect_true(find_result(results, "demo.global_object") != nullptr,
+              "默认查询应继续返回父对象");
+  expect_true(find_result(results, "demo.global_object.name") == nullptr,
+              "默认查询不应展开结构体成员");
+  expect_true(find_result(results, "demo.global_object.values[0]") == nullptr,
+              "默认查询不应展开结构体内数组成员");
+}
+
+void verify_composite_members_flatten_before_filtering() {
+  const auto model = make_model();
+
+  elf_static_view::StaticAddressQueryOptions options;
+  options.name_query_text = "global_object";
+  options.flatten_composite_members = true;
+  options.max_array_elements = 2;
+  const auto results = elf_static_view::query_static_addresses(model, options);
+
+  expect_true(find_result(results, "demo.global_object") != nullptr,
+              "展平查询应保留父对象");
+  expect_true(find_result(results, "demo.global_object.name") != nullptr,
+              "父对象名称应命中结构体成员");
+  expect_true(find_result(results, "demo.global_object.values[0]") != nullptr,
+              "父对象名称应命中结构体内数组首元素");
+  expect_true(find_result(results, "demo.global_object.values[1]") != nullptr,
+              "父对象名称应命中结构体内数组后续元素");
+  expect_true(find_result(results, "demo.global_object.values[2]") == nullptr,
+              "结构体内数组应继续受 max_array_elements 限制");
+}
+
+void verify_composite_member_paths_keep_instance_names() {
+  const auto model = make_model();
+
+  elf_static_view::StaticAddressQueryOptions options;
+  options.name_query_text = "name";
+  options.flatten_composite_members = true;
+  const auto results = elf_static_view::query_static_addresses(model, options);
+
+  expect_true(find_result(results, "demo.a_p.name") != nullptr,
+              "不同实例的成员路径应保留 a_p 前缀");
+  expect_true(find_result(results, "demo.b_p.name") != nullptr,
+              "不同实例的成员路径应保留 b_p 前缀");
+  expect_true(find_result(results, "demo.a_p.name#2") == nullptr,
+              "路径天然不重复时不应追加去重后缀");
+  expect_true(find_result(results, "demo.b_p.name#2") == nullptr,
+              "路径天然不重复时不应追加去重后缀");
 }
 
 void verify_runtime_only_filtered_by_default() {
@@ -200,6 +308,9 @@ int main() {
     verify_name_query_and_value_type();
     verify_comma_name_query_and_path_rules();
     verify_array_expansion();
+    verify_composite_members_are_not_flattened_by_default();
+    verify_composite_members_flatten_before_filtering();
+    verify_composite_member_paths_keep_instance_names();
     verify_runtime_only_filtered_by_default();
     verify_duplicate_import_paths_have_distinct_keys();
     verify_session_cache_reuse();

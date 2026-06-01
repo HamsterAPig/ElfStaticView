@@ -137,6 +137,20 @@ if (document.payload_kind == elf_static_view::ExportPayloadKind::VariableSummary
 auto imported = elf_static_view::import_project_data_bytes(file_bytes, "snapshot.esv");
 ```
 
+也可以直接查询静态地址。默认只保持父对象和数组元素的历史行为；如果需要让
+`struct` / `class` / `union` 成员在筛选前展开，显式开启 `flatten_composite_members`：
+
+```cpp
+elf_static_view::StaticAddressQueryOptions options;
+options.name_query_text = "objADC";
+options.flatten_composite_members = true;
+
+const auto results = elf_static_view::query_static_addresses(imported.model, options);
+// results.key: objADC、objADC.name、objADC.b[0]、objADC.b[1] ...
+```
+
+不同实例的成员会保留实例名前缀，例如 `a_p.name` 与 `b_p.name`；只有导入数据本身出现完全重复路径时，内部唯一键才可能带去重后缀。
+
 ## 配置文件
 
 程序会读取与可执行文件同目录的 `elf-static-view.yaml`。当前已经实际接线的配置项包括：

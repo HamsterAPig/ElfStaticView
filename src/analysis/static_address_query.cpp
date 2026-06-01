@@ -31,6 +31,7 @@ struct QuerySignature {
   std::string path_rules_text;
   bool include_runtime_only = false;
   bool only_static_known = true;
+  bool flatten_composite_members = false;
   std::size_t max_array_elements = 0;
 
   [[nodiscard]] bool matches(const StaticAddressQueryOptions& options) const {
@@ -38,6 +39,7 @@ struct QuerySignature {
            path_rules_text == options.path_rules_text &&
            include_runtime_only == options.include_runtime_only &&
            only_static_known == options.only_static_known &&
+           flatten_composite_members == options.flatten_composite_members &&
            max_array_elements == options.max_array_elements;
   }
 };
@@ -231,17 +233,35 @@ struct QuerySignature {
   return "unknown";
 }
 
+[[nodiscard]] bool is_composite_type(const TypeKind kind) {
+  return kind == TypeKind::Struct || kind == TypeKind::Class || kind == TypeKind::Union;
+}
+
+[[nodiscard]] bool should_expand_query_children(const ExpandedNode& node,
+                                                const bool flatten_composite_members) {
+  if (node.type_kind == TypeKind::Array) {
+    return true;
+  }
+  return flatten_composite_members && is_composite_type(node.type_kind);
+}
+
 void flatten_expanded_node(const analysis::Expander& expander,
-                          const ExpandedNode& node,
-                          std::vector<ExpandedNode>& output,
-                          std::unordered_set<std::string>& visited,
-                          std::size_t max_array_elements) {
+                           const ExpandedNode& node,
+                           std::vector<ExpandedNode>& output,
+                           std::unordered_set<std::string>& visited,
+                           std::size_t max_array_elements,
+                           bool flatten_composite_members) {
   if (!visited.insert(node.path).second) {
     return;
   }
 
   output.push_back(node);
 
+  if (!should_expand_query_children(node, flatten_composite_members)) {
+    return;
+  }
+
+  // 查询候选集先按选项展开，再执行名称和路径筛选，保证 obj.member 能被父对象名命中。
   std::vector<ExpandedNode> children = node.children;
   if (node.children_lazy) {
     children = expander.expand_children(node);
@@ -250,7 +270,12 @@ void flatten_expanded_node(const analysis::Expander& expander,
     children.resize(max_array_elements);
   }
   for (const auto& child : children) {
-    flatten_expanded_node(expander, child, output, visited, max_array_elements);
+    flatten_expanded_node(expander,
+                          child,
+                          output,
+                          visited,
+                          max_array_elements,
+                          flatten_composite_members);
   }
 }
 
@@ -299,6 +324,7 @@ StaticAddressQuerySession::query(const StaticAddressQueryOptions& options) {
       .path_rules_text = options.path_rules_text,
       .include_runtime_only = options.include_runtime_only,
       .only_static_known = options.only_static_known,
+      .flatten_composite_members = options.flatten_composite_members,
       .max_array_elements = options.max_array_elements,
   };
   impl_->name_tokens = split_name_query_tokens(options.name_query_text);
@@ -309,7 +335,12 @@ StaticAddressQuerySession::query(const StaticAddressQueryOptions& options) {
   flattened_nodes.reserve(expanded_nodes_.size());
   std::unordered_set<std::string> visited;
   for (const auto& node : expanded_nodes_) {
-    flatten_expanded_node(expander, node, flattened_nodes, visited, options.max_array_elements);
+    flatten_expanded_node(expander,
+                          node,
+                          flattened_nodes,
+                          visited,
+                          options.max_array_elements,
+                          options.flatten_composite_members);
   }
 
   std::vector<StaticAddressResult> results;
