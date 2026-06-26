@@ -96,7 +96,7 @@ AllowShortLoopsOnASingleLine: false
 # -- include排序 --
 IncludeBlocks: Regroup
 IncludeCategories:
-  - Regex: '"protoscope/'
+  - Regex: '"elf/'
     Priority: 1
     SortPriority: 0
   - Regex: '"'

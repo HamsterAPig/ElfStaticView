@@ -1,7 +1,9 @@
 #include "analysis/address_bias.hpp"
+
 #include "elf/dwarf_wrappers.hpp"
 #include "elf/elf_symbol_table.hpp"
 #include "elf/ti_coff_object.hpp"
+
 #include "elf_static_view/project.hpp"
 #include "platform/utf8.hpp"
 #include "ui/app_state.hpp"

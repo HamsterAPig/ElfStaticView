@@ -1,6 +1,7 @@
 #include "elf/dwarf_reader.hpp"
 
 #include "analysis/model_utils.hpp"
+
 #include "elf/dwarf_wrappers.hpp"
 #include "elf/elf_symbol_table.hpp"
 #include "elf/ti_coff_object.hpp"
@@ -12,6 +13,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <ranges>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -279,7 +281,7 @@ namespace {
         if (unit_context.version != 5) {
             return std::nullopt;
         }
-        const std::size_t table_offset = static_cast<std::size_t>(unit_context.str_offsets_base);
+        const auto table_offset = static_cast<std::size_t>(unit_context.str_offsets_base);
         if (table_offset + 8 > debug_str_offsets.size()) {
             return std::nullopt;
         }
@@ -289,8 +291,7 @@ namespace {
             return std::nullopt;
         }
         const auto version = read_u16_le(debug_str_offsets, table_offset + 4);
-        const auto padding = read_u16_le(debug_str_offsets, table_offset + 6);
-        if (version != 5 || padding != 0) {
+        if (const auto padding = read_u16_le(debug_str_offsets, table_offset + 6); version != 5 || padding != 0) {
             return std::nullopt;
         }
         const std::size_t entry_offset = table_offset + 8 + static_cast<std::size_t>(strx_index) * 4U;
@@ -404,8 +405,7 @@ namespace {
         const std::string& file_path)
     {
         static std::unordered_map<std::string, std::unordered_map<std::string, ManualTypeDescriptor>> cache;
-        const auto found = cache.find(file_path);
-        if (found != cache.end()) {
+        if (const auto found = cache.find(file_path); found != cache.end()) {
             return found->second;
         }
 
@@ -418,7 +418,7 @@ namespace {
             const auto debug_line_str = ElfSymbolTable::read_section_bytes(file_path, ".debug_line_str");
             if (debug_types.has_value() && debug_abbrev.has_value()) {
                 const auto& types = debug_types.value();
-                const auto empty_str = std::vector<std::uint8_t>{};
+                auto empty_str = std::vector<std::uint8_t>{};
                 const auto& strings = debug_str.has_value() ? debug_str.value() : empty_str;
                 const auto& string_offsets = debug_str_offsets.has_value() ? debug_str_offsets.value() : empty_str;
                 const auto& line_strings = debug_line_str.has_value() ? debug_line_str.value() : empty_str;
@@ -552,7 +552,6 @@ namespace {
                             }
                             manual_skip_form(effective_form, types, cursor);
                         }
-                        // 在 descriptor 构建完成之后，emplace 之前加入：
                         if (descriptor.tag == DW_TAG_array_type) {
                             // 现在 cursor 指向根 DIE 之后，即子 DIE 序列的起始
                             while (cursor < unit_end) {
@@ -567,7 +566,7 @@ namespace {
                                 }
                                 if (child_it->second.tag != DW_TAG_subrange_type) {
                                     // 跳过不感兴趣的子 DIE（如 DW_TAG_enumeration_type）
-                                    for (const auto& [attr, form] : child_it->second.attributes) {
+                                    for (const auto& form : child_it->second.attributes | std::views::values) {
                                         auto eff_form = (form == DW_FORM_indirect)
                                                             ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
                                                             : form;
@@ -576,7 +575,7 @@ namespace {
                                     continue;
                                 }
 
-                                // 这是一个 subrange_type，提取 upper_bound 或 count
+                                // grep upper_bound / count
                                 std::optional<std::uint64_t> upper_bound;
                                 std::optional<std::uint64_t> count;
                                 for (const auto& [attr, form] : child_it->second.attributes) {
@@ -658,7 +657,7 @@ namespace {
 
     [[nodiscard]] std::string normalize_rule_path(std::string value)
     {
-        std::replace(value.begin(), value.end(), '\\', '/');
+        std::ranges::replace(value, '\\', '/');
         return value;
     }
 
@@ -796,7 +795,7 @@ namespace {
 
     [[nodiscard]] std::string variable_identity_name(const VariableRecord& variable)
     {
-        const auto full_name = analysis::join_scope(variable.scope_path, variable.name);
+        auto full_name = analysis::join_scope(variable.scope_path, variable.name);
         if (!full_name.empty() && variable.name != "<anon>") {
             return full_name;
         }
@@ -847,66 +846,56 @@ namespace {
 
     void prune_unresolved_abstract_locals(std::vector<VariableRecord>& variables)
     {
-        variables.erase(std::remove_if(variables.begin(),
-                                       variables.end(),
-                                       [](const VariableRecord& variable) {
-                                           if (variable.availability != Availability::Unavailable) {
-                                               return false;
-                                           }
-                                           if (variable.const_value.has_value() ||
-                                               variable.const_value_text.has_value() ||
-                                               variable.address.absolute_address.has_value()) {
-                                               return false;
-                                           }
-                                           return variable.variable_kind == VariableKind::Local;
-                                       }),
-                        variables.end());
+        std::erase_if(variables, [](const VariableRecord& variable) {
+            if (variable.availability != Availability::Unavailable) {
+                return false;
+            }
+            if (variable.const_value.has_value() || variable.const_value_text.has_value() ||
+                variable.address.absolute_address.has_value()) {
+                return false;
+            }
+            return variable.variable_kind == VariableKind::Local;
+        });
     }
 
     void prune_shadowed_unresolved_reference_placeholders(std::vector<VariableRecord>& variables)
     {
-        variables.erase(
-            std::remove_if(variables.begin(),
-                           variables.end(),
-                           [&](const VariableRecord& variable) {
-                               const bool is_candidate_kind = variable.variable_kind == VariableKind::Local ||
-                                                              variable.variable_kind == VariableKind::Parameter;
-                               if (!is_candidate_kind) {
-                                   return false;
-                               }
+        std::erase_if(variables, [&](const VariableRecord& variable) {
+            const bool is_candidate_kind =
+                variable.variable_kind == VariableKind::Local || variable.variable_kind == VariableKind::Parameter;
+            if (!is_candidate_kind) {
+                return false;
+            }
 
-                               const bool has_materialized_value = variable.const_value.has_value() ||
-                                                                   variable.const_value_text.has_value() ||
-                                                                   variable.address.absolute_address.has_value();
-                               if (has_materialized_value) {
-                                   return false;
-                               }
+            const bool has_materialized_value = variable.const_value.has_value() ||
+                                                variable.const_value_text.has_value() ||
+                                                variable.address.absolute_address.has_value();
+            if (has_materialized_value) {
+                return false;
+            }
 
-                               const bool is_placeholder_location =
-                                   variable.address.location_description == "missing" ||
-                                   variable.address.location_description.rfind("op(", 0) == 0;
-                               if (!is_placeholder_location || variable.availability != Availability::RuntimeOnly) {
-                                   return false;
-                               }
+            const bool is_placeholder_location = variable.address.location_description == "missing" ||
+                                                 variable.address.location_description.rfind("op(", 0) == 0;
+            if (!is_placeholder_location || variable.availability != Availability::RuntimeOnly) {
+                return false;
+            }
 
-                               return std::any_of(variables.begin(), variables.end(), [&](const VariableRecord& other) {
-                                   if (&other == &variable) {
-                                       return false;
-                                   }
-                                   if (other.compile_unit_name != variable.compile_unit_name ||
-                                       other.name != variable.name || other.variable_kind != variable.variable_kind) {
-                                       return false;
-                                   }
-                                   const bool other_has_value = other.const_value.has_value() ||
-                                                                other.const_value_text.has_value() ||
-                                                                other.address.absolute_address.has_value();
-                                   if (!other_has_value) {
-                                       return false;
-                                   }
-                                   return scope_path_is_suffix_of(variable.scope_path, other.scope_path);
-                               });
-                           }),
-            variables.end());
+            return std::ranges::any_of(variables, [&](const VariableRecord& other) {
+                if (&other == &variable) {
+                    return false;
+                }
+                if (other.compile_unit_name != variable.compile_unit_name || other.name != variable.name ||
+                    other.variable_kind != variable.variable_kind) {
+                    return false;
+                }
+                const bool other_has_value = other.const_value.has_value() || other.const_value_text.has_value() ||
+                                             other.address.absolute_address.has_value();
+                if (!other_has_value) {
+                    return false;
+                }
+                return scope_path_is_suffix_of(variable.scope_path, other.scope_path);
+            });
+        });
     }
 
     [[nodiscard]] TypeKind map_type_kind(const Dwarf_Half tag)
@@ -961,7 +950,7 @@ namespace {
 
     [[nodiscard]] bool scope_contains_subprogram(const std::vector<Dwarf_Half>& scope_tag_stack)
     {
-        return std::any_of(scope_tag_stack.begin(), scope_tag_stack.end(), is_subprogram_scope_tag);
+        return std::ranges::any_of(scope_tag_stack, is_subprogram_scope_tag);
     }
 
     [[nodiscard]] bool scope_ends_with_class(const std::vector<Dwarf_Half>& scope_tag_stack)
@@ -1212,7 +1201,7 @@ namespace {
             return info;
         }
 
-        if (std::any_of(location->operations.begin(), location->operations.end(), [](const LocationOp& op) {
+        if (std::ranges::any_of(location->operations, [](const LocationOp& op) {
                 return op.atom == DW_OP_fbreg || (op.atom >= DW_OP_breg0 && op.atom <= DW_OP_breg31) ||
                        op.atom == DW_OP_bregx || (op.atom >= DW_OP_reg0 && op.atom <= DW_OP_reg31) ||
                        op.atom == DW_OP_regx || op.atom == DW_OP_call_frame_cfa;
@@ -1223,7 +1212,7 @@ namespace {
             return info;
         }
 
-        if (std::any_of(location->operations.begin(), location->operations.end(), [](const LocationOp& op) {
+        if (std::ranges::any_of(location->operations, [](const LocationOp& op) {
                 return op.atom == DW_OP_piece || op.atom == DW_OP_bit_piece || op.atom == DW_OP_stack_value;
             })) {
             info.kind = AddressKind::Unknown;
@@ -1232,7 +1221,7 @@ namespace {
             return info;
         }
 
-        if (std::any_of(location->operations.begin(), location->operations.end(), [](const LocationOp& op) {
+        if (std::ranges::any_of(location->operations, [](const LocationOp& op) {
                 return op.atom == DW_OP_implicit_value || op.atom == DW_OP_entry_value || op.atom == DW_OP_const_type ||
                        op.atom == DW_OP_regval_type || op.atom == DW_OP_convert || op.atom == DW_OP_reinterpret;
             })) {
@@ -1289,13 +1278,13 @@ namespace {
         return id;
     }
 
-    [[nodiscard]] std::optional<ReferenceTarget> resolve_type_reference_target(ReaderContext& context,
+    [[nodiscard]] std::optional<ReferenceTarget> resolve_type_reference_target(const ReaderContext& context,
                                                                                Dwarf_Attribute attr)
     {
         return type_reference_target(context.debug, attr, &context.file_path);
     }
 
-    [[nodiscard]] std::optional<DieHandle> referenced_die(ReaderContext& context, Dwarf_Attribute attr)
+    [[nodiscard]] std::optional<DieHandle> referenced_die(const ReaderContext& context, Dwarf_Attribute attr)
     {
         const auto target = resolve_type_reference_target(context, attr);
         if (!target.has_value()) {
@@ -1318,10 +1307,9 @@ namespace {
             return;
         }
 
-        const char* raw = std::getenv("ELF_STATIC_VIEW_TRACE_TYPE_OFFSETS");
-        if (raw != nullptr && *raw != '\0') {
-            const std::string filter = raw;
-            if (filter == "all" || filter == "*" || filter.find(std::to_string(target.offset)) != std::string::npos) {
+        if (const char* raw = std::getenv("ELF_STATIC_VIEW_TRACE_TYPE_OFFSETS"); raw != nullptr && *raw != '\0') {
+            if (const std::string filter = raw;
+                filter == "all" || filter == "*" || filter.find(std::to_string(target.offset)) != std::string::npos) {
                 std::cerr << "[trace-type-offset] offset=" << target.offset
                           << " is_info=" << (target.is_info ? "1" : "0")
                           << " tag=" << static_cast<unsigned int>(die_tag(die->get())) << '\n';
@@ -1357,7 +1345,7 @@ namespace {
                       << " present=" << (manual.contains(signature_hex) ? "1" : "0") << '\n';
         }
         if (const auto iter = manual.find(signature_hex); iter != manual.end()) {
-            const auto type_id = make_manual_type_id(signature_hex);
+            auto type_id = make_manual_type_id(signature_hex);
             if (should_trace_unknown_type_name(signature_hex)) {
                 std::cerr << "[trace-manual] use " << type_id << " tag=" << static_cast<unsigned int>(iter->second.tag)
                           << '\n';
@@ -1394,8 +1382,8 @@ namespace {
 
     [[nodiscard]] std::optional<std::string> referenced_type_id(ReaderContext& context, Dwarf_Attribute attr)
     {
-        const auto resolved = referenced_type_id(context, resolve_type_reference_target(context, attr));
-        if (resolved.has_value()) {
+        if (auto resolved = referenced_type_id(context, resolve_type_reference_target(context, attr));
+            resolved.has_value()) {
             return resolved;
         }
 
@@ -1563,8 +1551,8 @@ namespace {
         if (const auto signature_attr = attribute_of(context.debug, die, DW_AT_signature); signature_attr.has_value()) {
             Dwarf_Sig8 signature{};
             Dwarf_Error error = nullptr;
-            const int sig_result = dwarf_formsig8(signature_attr->get(), &signature, &error);
-            if (sig_result == DW_DLV_OK) {
+            if (const int sig_result = dwarf_formsig8(signature_attr->get(), &signature, &error);
+                sig_result == DW_DLV_OK) {
                 if (const auto resolved_id = resolve_signature_type_id(context, signature); resolved_id.has_value()) {
                     context.type_ids[type_id] = resolved_id.value();
                     if (is_declaration_only || !declaration_name.has_value() || declaration_name->empty()) {
@@ -1592,19 +1580,15 @@ namespace {
             type.alignment = unsigned_attr(attr->get());
         }
         if (const auto attr = attribute_of(context.debug, die, DW_AT_type); attr.has_value()) {
-            const auto resolved_id = referenced_type_id(context, attr->get());
-            if (resolved_id.has_value()) {
-                if (type.kind == TypeKind::Pointer || type.kind == TypeKind::Reference) {
-                    type.pointee_type = TypeRef{resolved_id.value()};
-                } else if (type.kind == TypeKind::MemberPointer) {
+            if (const auto resolved_id = referenced_type_id(context, attr->get()); resolved_id.has_value()) {
+                if (type.kind == TypeKind::Pointer || type.kind == TypeKind::Reference ||
+                    type.kind == TypeKind::MemberPointer) {
                     type.pointee_type = TypeRef{resolved_id.value()};
                 } else if (type.kind == TypeKind::Array) {
                     type.element_type = TypeRef{resolved_id.value()};
                 } else if (type.kind == TypeKind::Typedef) {
                     type.aliased_of = TypeRef{resolved_id.value()};
-                } else if (type.kind == TypeKind::Qualified) {
-                    type.qualified_of = TypeRef{resolved_id.value()};
-                } else if (type.kind == TypeKind::Atomic) {
+                } else if (type.kind == TypeKind::Qualified || type.kind == TypeKind::Atomic) {
                     type.qualified_of = TypeRef{resolved_id.value()};
                 }
             }
@@ -1612,9 +1596,8 @@ namespace {
 
         if ((type.kind == TypeKind::Atomic || type.kind == TypeKind::Unspecified) && type.name == type.id) {
             if (type.kind == TypeKind::Atomic && type.qualified_of.has_value()) {
-                const auto iter = std::find_if(context.types.begin(), context.types.end(), [&](const TypeNode& item) {
-                    return item.id == type.qualified_of->id;
-                });
+                const auto iter = std::ranges::find_if(
+                    context.types, [&](const TypeNode& item) { return item.id == type.qualified_of->id; });
                 if (iter != context.types.end() && !iter->name.empty()) {
                     type.name = "atomic " + iter->name;
                 }
@@ -1626,8 +1609,8 @@ namespace {
         if (auto child = child_of(context.debug, die); child.has_value()) {
             auto current = take_die(std::move(child));
             while (current) {
-                const auto child_tag = die_tag(current.get());
-                if (type.kind == TypeKind::Array && child_tag == DW_TAG_subrange_type) {
+                if (const auto child_tag = die_tag(current.get());
+                    type.kind == TypeKind::Array && child_tag == DW_TAG_subrange_type) {
                     if (const auto upper_bound_attr = attribute_of(context.debug, current.get(), DW_AT_upper_bound);
                         upper_bound_attr.has_value()) {
                         if (const auto upper_bound = unsigned_attr(upper_bound_attr->get()); upper_bound.has_value()) {
@@ -1754,10 +1737,9 @@ namespace {
         if (!location_desc.has_value()) {
             return false;
         }
-        return std::any_of(
-            location_desc->operations.begin(), location_desc->operations.end(), [](const LocationOp& op) {
-                return op.atom == DW_OP_addr || op.atom == DW_OP_addrx || op.atom == DW_OP_GNU_addr_index;
-            });
+        return std::ranges::any_of(location_desc->operations, [](const LocationOp& op) {
+            return op.atom == DW_OP_addr || op.atom == DW_OP_addrx || op.atom == DW_OP_GNU_addr_index;
+        });
     }
 
     void record_variable(ReaderContext& context, Dwarf_Die die, const Dwarf_Half tag)
@@ -1822,8 +1804,7 @@ namespace {
         const auto resolved_indexed_addr =
             location_desc.has_value() ? indexed_address_from_die_location(die, location_desc.value()) : std::nullopt;
         const bool is_thread_local =
-            location_desc.has_value() &&
-            std::any_of(location_desc->operations.begin(), location_desc->operations.end(), [](const LocationOp& op) {
+            location_desc.has_value() && std::ranges::any_of(location_desc->operations, [](const LocationOp& op) {
                 return op.atom == DW_OP_form_tls_address || op.atom == DW_OP_GNU_push_tls_address;
             });
         variable.is_thread_local = is_thread_local;
@@ -1835,11 +1816,7 @@ namespace {
             const_value_attr.has_value()) {
             variable.const_value = signed_const_attr(const_value_attr->get());
             variable.const_value_text = const_value_text_attr(const_value_attr->get());
-            if (variable.const_value.has_value()) {
-                variable.availability = Availability::StaticAddressKnown;
-                variable.address.kind = AddressKind::Unknown;
-                variable.address.location_description = "DW_AT_const_value";
-            } else if (variable.const_value_text.has_value()) {
+            if (variable.const_value.has_value() || variable.const_value_text.has_value()) {
                 variable.availability = Availability::StaticAddressKnown;
                 variable.address.kind = AddressKind::Unknown;
                 variable.address.location_description = "DW_AT_const_value";
@@ -2007,7 +1984,7 @@ namespace {
 
 } // namespace
 
-ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& load_policy) const
+ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& load_policy)
 {
     const auto dwarf_load_started_at = std::chrono::steady_clock::now();
     const ObjectFileKind file_kind = detect_object_file_kind(file_path);
@@ -2079,11 +2056,10 @@ ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& l
             cu.language = "unknown";
         }
         if (const auto ranges_attr = attribute_of(context.debug, cu_die.get(), DW_AT_ranges); ranges_attr.has_value()) {
-            Availability availability = Availability::RuntimeOnly;
+            auto availability = Availability::RuntimeOnly;
             cu.address =
                 classify_location(read_range_description(ranges_attr->get(), cu_die.get()), std::nullopt, availability);
         } else {
-            std::optional<LocationDescription> unit_location;
             LocationDescription::Entry entry;
             bool has_range = false;
             if (const auto low_pc_attr = attribute_of(context.debug, cu_die.get(), DW_AT_low_pc);
@@ -2105,10 +2081,11 @@ ProjectModel DwarfReader::load(const std::string& file_path, const LoadPolicy& l
                 }
             }
             if (has_range) {
+                std::optional<LocationDescription> unit_location;
                 unit_location = LocationDescription{};
                 unit_location->entry_count = 1;
                 unit_location->entries.push_back(entry);
-                Availability availability = Availability::RuntimeOnly;
+                auto availability = Availability::RuntimeOnly;
                 cu.address = classify_location(unit_location, std::nullopt, availability);
             }
         }

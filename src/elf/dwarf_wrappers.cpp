@@ -10,6 +10,7 @@
 #include <iostream>
 #include <optional>
 #include <sstream>
+#include <type_traits>
 #include <unordered_map>
 
 namespace elf_static_view::elf {
@@ -26,30 +27,57 @@ namespace {
         return stream.str();
     }
 
+    // ManualAttributeView 映射 libdwarf 内部 Dwarf_Attribute_s 的前段字段。
+    // 仅用于手工读取 DW_FORM_ref_sup4 / DW_FORM_ref_sup8 的 payload，
+    // 因为 libdwarf 的 dwarf_global_formref_b / dwarf_formudata 不处理这两种 form。
+    // 字段顺序必须与 3rdparty/libdwarf-code/src/lib/libdwarf/dwarf_opaque.h
+    // 中的 Dwarf_Attribute_s 严格一致。
+    struct ManualAttributeView {
+        Dwarf_Half attribute = 0;         // Dwarf_Attribute_s::ar_attribute
+        Dwarf_Half form = 0;              // Dwarf_Attribute_s::ar_attribute_form
+        Dwarf_Half direct_form = 0;       // Dwarf_Attribute_s::ar_attribute_form_direct
+        void* cu_context = nullptr;       // Dwarf_Attribute_s::ar_cu_context (Dwarf_CU_Context)
+        Dwarf_Small* debug_ptr = nullptr; // Dwarf_Attribute_s::ar_debug_ptr
+        Dwarf_Signed implicit_const = 0;  // Dwarf_Attribute_s::ar_implicit_const
+        Dwarf_Debug debug = nullptr;      // Dwarf_Attribute_s::ar_dbg
+    };
+
+    static_assert(std::is_standard_layout_v<ManualAttributeView>,
+                  "ManualAttributeView must remain standard-layout to map Dwarf_Attribute_s safely");
+    static_assert(std::is_trivially_copyable_v<ManualAttributeView>,
+                  "ManualAttributeView must remain trivially-copyable to map Dwarf_Attribute_s safely");
+
     [[nodiscard]] std::optional<Dwarf_Unsigned> read_manual_ref_sup_offset(Dwarf_Attribute attr, const Dwarf_Half form)
     {
         if (form != DW_FORM_ref_sup4 && form != DW_FORM_ref_sup8) {
             return std::nullopt;
         }
 
-        struct ManualAttributeView {
-            Dwarf_Half attribute = 0;
-            Dwarf_Half form = 0;
-            Dwarf_Half direct_form = 0;
-            void* cu_context = nullptr;
-            Dwarf_Small* debug_ptr = nullptr;
-            Dwarf_Signed implicit_const = 0;
-            Dwarf_Debug debug = nullptr;
-        };
-
         const auto* raw_attr = reinterpret_cast<const ManualAttributeView*>(attr);
         if (raw_attr == nullptr || raw_attr->debug_ptr == nullptr) {
             return std::nullopt;
         }
 
+        // 运行时校验：用 dwarf_whatform 获取真实 form 值，与 reinterpret_cast 映射的 form 字段对比。
+        // 若 libdwarf 版本升级导致 Dwarf_Attribute_s 字段重排，此检查可捕获不匹配。
+        {
+            Dwarf_Half verified_form = 0;
+            Dwarf_Error form_error = nullptr;
+            const int vr = dwarf_whatform(attr, &verified_form, &form_error);
+            if (vr == DW_DLV_OK) {
+                if (verified_form != raw_attr->form) {
+                    std::cerr << "[dwarf-wrappers] libdwarf Dwarf_Attribute_s layout mismatch:" << " dwarf_whatform="
+                              << verified_form << " reinterpret_cast->form=" << raw_attr->form
+                              << " -- refusing manual ref_sup read\n";
+                    return std::nullopt;
+                }
+            } // vr == DW_DLV_NO_ENTRY: no cleanup needed
+        }
+
         Dwarf_Unsigned offset = 0;
         const std::size_t width = form == DW_FORM_ref_sup8 ? 8U : 4U;
-        // 当前 supplementary 引用样本来自 x86_64 little-endian GCC fixture；这里按固定宽度小端读取 payload。
+        // 小端读取 payload，已在 x86_64 GCC / TI C2000 EABI fixture 上验证。
+        // 大端平台需扩展字节序翻转逻辑。
         for (std::size_t index = 0; index < width; ++index) {
             offset |= static_cast<Dwarf_Unsigned>(static_cast<unsigned char>(raw_attr->debug_ptr[index]))
                       << (index * 8U);

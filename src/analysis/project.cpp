@@ -3,6 +3,7 @@
 #include "analysis/address_bias.hpp"
 #include "analysis/expander.hpp"
 #include "analysis/model_utils.hpp"
+
 #include "elf/dwarf_reader.hpp"
 #include "elf/raw_dwarf_reader.hpp"
 
@@ -184,11 +185,10 @@ std::string to_string(VariableKind value)
 
 ProjectModel ProjectLoader::scan(const std::string& file_path, const ScanOptions& options) const
 {
-    elf::DwarfReader reader;
     const LoadPolicy load_policy = normalize_load_policy(options);
     ProjectModel model;
     try {
-        model = reader.load(file_path, load_policy);
+        model = elf::DwarfReader::load(file_path, load_policy);
     } catch (const std::exception& error) {
         throw std::runtime_error(build_load_error_message(file_path, error));
     }
@@ -203,11 +203,10 @@ ProjectModel ProjectLoader::scan(const std::string& file_path, const ScanOptions
 
 ProjectModel ProjectLoader::dump(const std::string& file_path, const DumpOptions& options) const
 {
-    elf::DwarfReader reader;
     const LoadPolicy load_policy = normalize_load_policy(options);
     ProjectModel model;
     try {
-        model = reader.load(file_path, load_policy);
+        model = elf::DwarfReader::load(file_path, load_policy);
     } catch (const std::exception& error) {
         throw std::runtime_error(build_load_error_message(file_path, error));
     }
