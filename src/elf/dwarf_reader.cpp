@@ -61,6 +61,8 @@ struct ManualTypeDescriptor {
   Dwarf_Half tag = 0;
   std::optional<std::string> name;
   std::optional<std::string> referenced_signature_hex;
+  std::vector<std::uint64_t> dimensions;
+  std::optional<std::uint64_t> byte_size;
 };
 
 struct ManualTypeUnitContext {
@@ -401,17 +403,25 @@ void manual_skip_form(const Dwarf_Half form,
 
   std::unordered_map<std::string, ManualTypeDescriptor> descriptors;
   try {
-    const auto debug_types = ElfSymbolTable::read_section_bytes(file_path, ".debug_types");
-    const auto debug_abbrev = ElfSymbolTable::read_section_bytes(file_path, ".debug_abbrev");
-    const auto debug_str = ElfSymbolTable::read_section_bytes(file_path, ".debug_str");
-    const auto debug_str_offsets = ElfSymbolTable::read_section_bytes(file_path, ".debug_str_offsets");
-    const auto debug_line_str = ElfSymbolTable::read_section_bytes(file_path, ".debug_line_str");
+    const auto debug_types =
+        ElfSymbolTable::read_section_bytes(file_path, ".debug_types");
+    const auto debug_abbrev =
+        ElfSymbolTable::read_section_bytes(file_path, ".debug_abbrev");
+    const auto debug_str =
+        ElfSymbolTable::read_section_bytes(file_path, ".debug_str");
+    const auto debug_str_offsets =
+        ElfSymbolTable::read_section_bytes(file_path, ".debug_str_offsets");
+    const auto debug_line_str =
+        ElfSymbolTable::read_section_bytes(file_path, ".debug_line_str");
     if (debug_types.has_value() && debug_abbrev.has_value()) {
-      const auto& types = debug_types.value();
-      const auto empty_str = std::vector<std::uint8_t> {};
-      const auto& strings = debug_str.has_value() ? debug_str.value() : empty_str;
-      const auto& string_offsets = debug_str_offsets.has_value() ? debug_str_offsets.value() : empty_str;
-      const auto& line_strings = debug_line_str.has_value() ? debug_line_str.value() : empty_str;
+      const auto &types = debug_types.value();
+      const auto empty_str = std::vector<std::uint8_t>{};
+      const auto &strings =
+          debug_str.has_value() ? debug_str.value() : empty_str;
+      const auto &string_offsets =
+          debug_str_offsets.has_value() ? debug_str_offsets.value() : empty_str;
+      const auto &line_strings =
+          debug_line_str.has_value() ? debug_line_str.value() : empty_str;
       std::size_t unit_offset = 0;
       while (unit_offset + 23 <= types.size()) {
         const auto current_unit_offset = unit_offset;
@@ -427,10 +437,10 @@ void manual_skip_form(const Dwarf_Half form,
         try {
           const auto version = read_u16_le(types, current_unit_offset + 4);
           std::size_t header_offset = current_unit_offset + 6;
-          ManualTypeUnitContext unit_context {};
+          ManualTypeUnitContext unit_context{};
           unit_context.version = version;
           std::uint32_t abbrev_offset = 0;
-          Dwarf_Sig8 signature {};
+          Dwarf_Sig8 signature{};
           std::uint32_t type_offset = 0;
           if (version == 4) {
             abbrev_offset = read_u32_le(types, header_offset);
@@ -439,8 +449,7 @@ void manual_skip_form(const Dwarf_Half form,
               continue;
             }
             unit_context.addr_size = types[header_offset + 4];
-            std::memcpy(signature.signature,
-                        types.data() + header_offset + 5,
+            std::memcpy(signature.signature, types.data() + header_offset + 5,
                         sizeof(signature.signature));
             type_offset = read_u32_le(types, header_offset + 13);
           } else if (version == 5) {
@@ -451,8 +460,7 @@ void manual_skip_form(const Dwarf_Half form,
               continue;
             }
             unit_context.addr_size = types[header_offset + 5];
-            std::memcpy(signature.signature,
-                        types.data() + header_offset + 6,
+            std::memcpy(signature.signature, types.data() + header_offset + 6,
                         sizeof(signature.signature));
             type_offset = read_u32_le(types, header_offset + 14);
           } else {
@@ -463,7 +471,8 @@ void manual_skip_form(const Dwarf_Half form,
             unit_offset = unit_end;
             continue;
           }
-          const auto abbrev_entries = load_manual_abbrev_entries(debug_abbrev.value(), abbrev_offset);
+          const auto abbrev_entries =
+              load_manual_abbrev_entries(debug_abbrev.value(), abbrev_offset);
           const auto signature_hex = sig8_to_hex(signature);
           const auto die_offset = current_unit_offset + type_offset;
           if (die_offset >= unit_end) {
@@ -479,13 +488,16 @@ void manual_skip_form(const Dwarf_Half form,
           }
           ManualTypeDescriptor descriptor;
           descriptor.tag = abbrev->second.tag;
-          for (const auto& [attr, form] : abbrev->second.attributes) {
+          for (const auto &[attr, form] : abbrev->second.attributes) {
             auto effective_form = form;
             if (effective_form == DW_FORM_indirect) {
-              effective_form = static_cast<Dwarf_Half>(read_uleb128(types, cursor));
+              effective_form =
+                  static_cast<Dwarf_Half>(read_uleb128(types, cursor));
             }
             if (attr == DW_AT_str_offsets_base) {
-              if (const auto value = read_form_unsigned_value(effective_form, types, cursor); value.has_value()) {
+              if (const auto value =
+                      read_form_unsigned_value(effective_form, types, cursor);
+                  value.has_value()) {
                 unit_context.str_offsets_base = value.value();
               } else {
                 manual_skip_form(effective_form, types, cursor);
@@ -493,50 +505,130 @@ void manual_skip_form(const Dwarf_Half form,
               continue;
             }
             if (attr == DW_AT_name && effective_form == DW_FORM_strp) {
-              descriptor.name = manual_read_string(strings, read_u32_le(types, cursor));
+              descriptor.name =
+                  manual_read_string(strings, read_u32_le(types, cursor));
               cursor += 4;
               continue;
             }
             if (attr == DW_AT_name && effective_form == DW_FORM_line_strp) {
-              descriptor.name = manual_read_string(line_strings, read_u32_le(types, cursor));
+              descriptor.name =
+                  manual_read_string(line_strings, read_u32_le(types, cursor));
               cursor += 4;
               continue;
             }
             if (attr == DW_AT_name && effective_form == DW_FORM_string) {
-              const auto end = std::find(types.begin() + static_cast<std::ptrdiff_t>(cursor),
-                                         types.end(),
-                                         static_cast<std::uint8_t>(0));
-              descriptor.name =
-                std::string(reinterpret_cast<const char*>(types.data() + cursor),
-                            static_cast<std::size_t>(end -
-                                                     (types.begin() + static_cast<std::ptrdiff_t>(cursor))));
+              const auto end =
+                  std::find(types.begin() + static_cast<std::ptrdiff_t>(cursor),
+                            types.end(), static_cast<std::uint8_t>(0));
+              descriptor.name = std::string(
+                  reinterpret_cast<const char *>(types.data() + cursor),
+                  static_cast<std::size_t>(
+                      end -
+                      (types.begin() + static_cast<std::ptrdiff_t>(cursor))));
               cursor += descriptor.name->size() + 1;
               continue;
             }
-            if (attr == DW_AT_name &&
-                (effective_form == DW_FORM_strx || effective_form == DW_FORM_strx1 ||
-                 effective_form == DW_FORM_strx2 || effective_form == DW_FORM_strx3 ||
-                 effective_form == DW_FORM_strx4)) {
-              if (const auto value = read_form_unsigned_value(effective_form, types, cursor); value.has_value()) {
-                descriptor.name = manual_read_strx_string(string_offsets, strings, unit_context, value.value());
+            if (attr == DW_AT_name && (effective_form == DW_FORM_strx ||
+                                       effective_form == DW_FORM_strx1 ||
+                                       effective_form == DW_FORM_strx2 ||
+                                       effective_form == DW_FORM_strx3 ||
+                                       effective_form == DW_FORM_strx4)) {
+              if (const auto value =
+                      read_form_unsigned_value(effective_form, types, cursor);
+                  value.has_value()) {
+                descriptor.name = manual_read_strx_string(
+                    string_offsets, strings, unit_context, value.value());
               } else {
                 manual_skip_form(effective_form, types, cursor);
               }
               continue;
             }
             if (attr == DW_AT_type && effective_form == DW_FORM_ref_sig8) {
-              Dwarf_Sig8 referenced {};
-              std::memcpy(referenced.signature, types.data() + cursor, sizeof(referenced.signature));
+              Dwarf_Sig8 referenced{};
+              std::memcpy(referenced.signature, types.data() + cursor,
+                          sizeof(referenced.signature));
               descriptor.referenced_signature_hex = sig8_to_hex(referenced);
               cursor += 8;
               continue;
             }
+            if (attr == DW_AT_byte_size) {
+              if (auto val =
+                      read_form_unsigned_value(effective_form, types, cursor)) {
+                descriptor.byte_size = val.value();
+              } else {
+                manual_skip_form(effective_form, types, cursor);
+              }
+              continue;
+            }
             manual_skip_form(effective_form, types, cursor);
+          }
+          // 在 descriptor 构建完成之后，emplace 之前加入：
+          if (descriptor.tag == DW_TAG_array_type) {
+            // 现在 cursor 指向根 DIE 之后，即子 DIE 序列的起始
+            while (cursor < unit_end) {
+              const auto child_code = read_uleb128(types, cursor);
+              if (child_code == 0) {
+                break; // 子 DIE 列表结束
+              }
+              auto child_it = abbrev_entries.find(child_code);
+              if (child_it == abbrev_entries.end()) {
+                // 遇到未知缩写码，放弃解析当前 unit 的子 DIE 维度
+                break;
+              }
+              if (child_it->second.tag != DW_TAG_subrange_type) {
+                // 跳过不感兴趣的子 DIE（如 DW_TAG_enumeration_type）
+                for (const auto &[attr, form] : child_it->second.attributes) {
+                  auto eff_form =
+                      (form == DW_FORM_indirect)
+                          ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                          : form;
+                  manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+              }
+
+              // 这是一个 subrange_type，提取 upper_bound 或 count
+              std::optional<std::uint64_t> upper_bound;
+              std::optional<std::uint64_t> count;
+              for (const auto &[attr, form] : child_it->second.attributes) {
+                auto eff_form =
+                    (form == DW_FORM_indirect)
+                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                        : form;
+                if (attr == DW_AT_upper_bound) {
+                  if (auto val =
+                          read_form_unsigned_value(eff_form, types, cursor)) {
+                    upper_bound = val;
+                  } else {
+                    manual_skip_form(eff_form, types, cursor);
+                  }
+                } else if (attr == DW_AT_count) {
+                  if (auto val =
+                          read_form_unsigned_value(eff_form, types, cursor)) {
+                    count = val;
+                  } else {
+                    manual_skip_form(eff_form, types, cursor);
+                  }
+                } else {
+                  manual_skip_form(eff_form, types, cursor);
+                }
+              }
+
+              if (upper_bound.has_value()) {
+                descriptor.dimensions.push_back(upper_bound.value() + 1);
+              } else if (count.has_value()) {
+                descriptor.dimensions.push_back(count.value());
+              } else {
+                // 没有界限信息，填入 0 表示未知维度
+                descriptor.dimensions.push_back(0);
+              }
+            }
           }
           descriptors.emplace(signature_hex, std::move(descriptor));
         } catch (...) {
-          // TI 的 type unit 里会混入我们暂时不关心的 vendor / block / exprloc 形式。
-          // 这里按 unit 粒度跳过，避免单个 unit 失败把整张手工类型表清空。
+          // TI 的 type unit 里会混入我们暂时不关心的 vendor / block / exprloc
+          // 形式。 这里按 unit 粒度跳过，避免单个 unit
+          // 失败把整张手工类型表清空。
           unit_offset = unit_end;
           continue;
         }
@@ -1260,33 +1352,43 @@ void ensure_type_recorded(ReaderContext& context, const ReferenceTarget& target)
   return resolve_type_id(context, target);
 }
 
-[[nodiscard]] std::optional<std::string> resolve_signature_type_id(ReaderContext& context,
-                                                                   const Dwarf_Sig8& signature) {
+[[nodiscard]] std::optional<std::string>
+resolve_signature_type_id(ReaderContext &context, const Dwarf_Sig8 &signature) {
   const auto signature_hex = sig8_to_hex(signature);
   if (const auto found = context.signature_type_ids.find(signature_hex);
       found != context.signature_type_ids.end()) {
     return found->second;
   }
-  const auto& manual = manual_type_descriptors(context.file_path);
+  const auto &manual = manual_type_descriptors(context.file_path);
   if (should_trace_unknown_type_name(signature_hex)) {
     std::cerr << "[trace-manual] sig=" << signature_hex
-              << " present=" << (manual.contains(signature_hex) ? "1" : "0") << '\n';
+              << " present=" << (manual.contains(signature_hex) ? "1" : "0")
+              << '\n';
   }
   if (const auto iter = manual.find(signature_hex); iter != manual.end()) {
     const auto type_id = make_manual_type_id(signature_hex);
     if (should_trace_unknown_type_name(signature_hex)) {
-      std::cerr << "[trace-manual] use " << type_id << " tag="
-                << static_cast<unsigned int>(iter->second.tag) << '\n';
+      std::cerr << "[trace-manual] use " << type_id
+                << " tag=" << static_cast<unsigned int>(iter->second.tag)
+                << '\n';
     }
     if (!context.recorded_type_ids.contains(type_id)) {
       TypeNode type;
       type.id = type_id;
       type.kind = map_type_kind(iter->second.tag);
       type.name = iter->second.name.value_or(type_id);
+      if (iter->second.byte_size.has_value()) {
+        type.byte_size = iter->second.byte_size;
+      }
       if (iter->second.referenced_signature_hex.has_value()) {
-        const auto referenced_id = make_manual_type_id(iter->second.referenced_signature_hex.value());
-        if (type.kind == TypeKind::Pointer || type.kind == TypeKind::Reference) {
+        const auto referenced_id =
+            make_manual_type_id(iter->second.referenced_signature_hex.value());
+        if (type.kind == TypeKind::Pointer ||
+            type.kind == TypeKind::Reference) {
           type.pointee_type = TypeRef{referenced_id};
+        } else if (type.kind == TypeKind::Array) {
+          type.element_type = TypeRef{referenced_id};
+          type.array_dimensions = iter->second.dimensions; // 加上手工解析的维度
         } else if (type.kind == TypeKind::Typedef) {
           type.aliased_of = TypeRef{referenced_id};
         } else {
