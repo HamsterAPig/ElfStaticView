@@ -1,0 +1,140 @@
+# SPDX-License-Identifier: MIT
+# ProtoScope .clang-format - C++20项目代码格式化配置
+#
+# 基于 LLVM 风格定制，注重可读性与一致性。
+# 核心视觉约定：4空格缩进、函数定义换行大括号、控制语句同行大括号、
+# 指针/引用右对齐、按类型分组排序 include。
+
+BasedOnStyle: LLVM
+
+# -- 基本尺寸 --
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+ColumnLimit: 120
+
+# -- 换行与大括号 --
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterClass: false
+  AfterEnum: false
+  AfterNamespace: false
+  AfterStruct: false
+  AfterUnion: false
+  AfterExternBlock: false
+  # 函数定义：大括号换行
+  AfterFunction: true
+  # 控制语句：大括号同行
+  AfterControlStatement: Never
+  BeforeCatch: false
+  BeforeElse: false
+  BeforeLambdaBody: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: true
+
+AccessModifierOffset: -4
+
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignTrailingComments: true
+
+AllowAllParametersOfDeclarationOnNextLine: true
+BinPackArguments: false
+BinPackParameters: false
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerIndentWidth: 4
+
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+ContinuationIndentWidth: 4
+IndentCaseLabels: true
+IndentGotoLabels: true
+IndentPPDirectives: None
+IndentRequiresClause: true
+IndentWrappedFunctionNames: false
+
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 2
+
+SpaceAfterCStyleCast: true
+SpaceAfterLogicalNot: false
+SpaceAfterTemplateKeyword: true
+SpaceAroundPointerQualifiers: Default
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeCaseColon: false
+SpaceBeforeCpp11BracedList: false
+SpaceBeforeCtorInitializerColon: true
+SpaceBeforeInheritanceColon: true
+SpaceBeforeParens: ControlStatements
+SpaceBeforeRangeBasedForLoopColon: true
+SpaceInEmptyBlock: false
+SpaceInEmptyParentheses: false
+SpacesBeforeTrailingComments: 1
+SpacesInAngles: false
+SpacesInContainerLiterals: true
+SpacesInCStyleCastParentheses: false
+SpacesInLineCommentPrefix:
+  Minimum: 1
+  Maximum: -1
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+Standard: Latest
+Cpp11BracedListStyle: true
+AllowShortBlocksOnASingleLine: Always
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLambdasOnASingleLine: All
+AllowShortLoopsOnASingleLine: false
+
+# -- include排序 --
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '"protoscope/'
+    Priority: 1
+    SortPriority: 0
+  - Regex: '"'
+    Priority: 2
+    SortPriority: 1
+  - Regex: '<[a-z_]+>'
+    Priority: 3
+    SortPriority: 2
+  - Regex: '<[a-z_]+\.h>'
+    Priority: 4
+    SortPriority: 3
+  - Regex: '<'
+    Priority: 5
+    SortPriority: 4
+  - Regex: '.*'
+    Priority: 6
+    SortPriority: 5
+IncludeIsMainRegex: '(Test)?$'
+SortIncludes: CaseSensitive
+SortUsingDeclarations: true
+
+FixNamespaceComments: true
+NamespaceIndentation: Inner
+
+PackConstructorInitializers: BinPack
+PenaltyBreakAssignment: 2
+PenaltyBreakBeforeFirstCallParameter: 1
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyBreakTemplateDeclaration: 10
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 200
+PenaltyIndentedWhitespace: 0
+ReflowComments: true
+SeparateDefinitionBlocks: Always
+ShortNamespaceLines: 1
+StatementAttributeLikeMacros: []
+StatementMacros: []
+TypenameMacros: []
+WhitespaceSensitiveMacros: []
