@@ -44,6 +44,8 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
 set(BUILD_DWARFGEN ON CACHE BOOL "Build dwarfgen for DWARF supplementary fixtures" FORCE)
 
+include(cmake/Format.cmake)
+
 add_subdirectory(3rdparty/libdwarf-code EXCLUDE_FROM_ALL)
 add_subdirectory(3rdparty/yaml-cpp EXCLUDE_FROM_ALL)
 

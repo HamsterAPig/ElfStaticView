@@ -8,10 +8,10 @@
 namespace elf_static_view::ui {
 
 struct ReleaseMetadata {
-  std::string repository_url;
-  std::string releases_api_url;
-  std::string author_name;
-  std::string author_email;
+    std::string repository_url;
+    std::string releases_api_url;
+    std::string author_name;
+    std::string author_email;
 };
 
 [[nodiscard]] const ReleaseMetadata& default_release_metadata();
@@ -27,4 +27,4 @@ struct ReleaseMetadata {
 void load_app_config(AppState& state, const std::filesystem::path& executable_path);
 void save_app_config(const AppState& state);
 
-}  // namespace elf_static_view::ui
+} // namespace elf_static_view::ui

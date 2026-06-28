@@ -9,314 +9,316 @@
 
 namespace {
 
-void expect_true(const bool condition, const std::string& message) {
-  if (!condition) {
-    throw std::runtime_error(message);
-  }
+void expect_true(const bool condition, const std::string& message)
+{
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
 }
 
 [[nodiscard]] const elf_static_view::StaticAddressResult* find_result(
-    const std::vector<elf_static_view::StaticAddressResult>& results,
-    const std::string& key) {
-  const auto iter = std::find_if(results.begin(), results.end(), [&](const auto& result) {
-    return result.key == key;
-  });
-  if (iter == results.end()) {
-    return nullptr;
-  }
-  return &(*iter);
+    const std::vector<elf_static_view::StaticAddressResult>& results, const std::string& key)
+{
+    const auto iter =
+        std::find_if(results.begin(), results.end(), [&](const auto& result) { return result.key == key; });
+    if (iter == results.end()) {
+        return nullptr;
+    }
+    return &(*iter);
 }
 
-[[nodiscard]] elf_static_view::TypeNode make_int_type() {
-  elf_static_view::TypeNode type;
-  type.id = "type:int";
-  type.kind = elf_static_view::TypeKind::Base;
-  type.name = "int";
-  type.byte_size = 4;
-  return type;
+[[nodiscard]] elf_static_view::TypeNode make_int_type()
+{
+    elf_static_view::TypeNode type;
+    type.id = "type:int";
+    type.kind = elf_static_view::TypeKind::Base;
+    type.name = "int";
+    type.byte_size = 4;
+    return type;
 }
 
-[[nodiscard]] elf_static_view::TypeNode make_int_array_type() {
-  elf_static_view::TypeNode type;
-  type.id = "type:int_array";
-  type.kind = elf_static_view::TypeKind::Array;
-  type.name = "int[3]";
-  type.byte_size = 12;
-  type.element_type = elf_static_view::TypeRef {"type:int"};
-  type.array_dimensions = {3};
-  return type;
+[[nodiscard]] elf_static_view::TypeNode make_int_array_type()
+{
+    elf_static_view::TypeNode type;
+    type.id = "type:int_array";
+    type.kind = elf_static_view::TypeKind::Array;
+    type.name = "int[3]";
+    type.byte_size = 12;
+    type.element_type = elf_static_view::TypeRef{"type:int"};
+    type.array_dimensions = {3};
+    return type;
 }
 
-[[nodiscard]] elf_static_view::TypeNode make_sample_type() {
-  elf_static_view::TypeNode type;
-  type.id = "type:struct";
-  type.kind = elf_static_view::TypeKind::Struct;
-  type.name = "Sample";
-  type.byte_size = 16;
+[[nodiscard]] elf_static_view::TypeNode make_sample_type()
+{
+    elf_static_view::TypeNode type;
+    type.id = "type:struct";
+    type.kind = elf_static_view::TypeKind::Struct;
+    type.name = "Sample";
+    type.byte_size = 16;
 
-  elf_static_view::TypeMember name_member;
-  name_member.name = "name";
-  name_member.type = elf_static_view::TypeRef {"type:int"};
-  name_member.address.relative_offset = 0;
-  name_member.availability = elf_static_view::Availability::StaticAddressKnown;
-  name_member.byte_size = 4;
-  type.members.push_back(std::move(name_member));
+    elf_static_view::TypeMember name_member;
+    name_member.name = "name";
+    name_member.type = elf_static_view::TypeRef{"type:int"};
+    name_member.address.relative_offset = 0;
+    name_member.availability = elf_static_view::Availability::StaticAddressKnown;
+    name_member.byte_size = 4;
+    type.members.push_back(std::move(name_member));
 
-  elf_static_view::TypeMember values_member;
-  values_member.name = "values";
-  values_member.type = elf_static_view::TypeRef {"type:int_array"};
-  values_member.address.relative_offset = 4;
-  values_member.availability = elf_static_view::Availability::StaticAddressKnown;
-  values_member.byte_size = 12;
-  type.members.push_back(std::move(values_member));
+    elf_static_view::TypeMember values_member;
+    values_member.name = "values";
+    values_member.type = elf_static_view::TypeRef{"type:int_array"};
+    values_member.address.relative_offset = 4;
+    values_member.availability = elf_static_view::Availability::StaticAddressKnown;
+    values_member.byte_size = 12;
+    type.members.push_back(std::move(values_member));
 
-  return type;
+    return type;
 }
 
-[[nodiscard]] elf_static_view::ProjectModel make_model() {
-  elf_static_view::ProjectModel model;
-  model.file = "memory-model";
-  model.types.push_back(make_int_type());
-  model.types.push_back(make_int_array_type());
-  model.types.push_back(make_sample_type());
+[[nodiscard]] elf_static_view::ProjectModel make_model()
+{
+    elf_static_view::ProjectModel model;
+    model.file = "memory-model";
+    model.types.push_back(make_int_type());
+    model.types.push_back(make_int_array_type());
+    model.types.push_back(make_sample_type());
 
-  elf_static_view::ExpandedNode global_object;
-  global_object.path = "demo.global_object";
-  global_object.display_name = "global_object";
-  global_object.type_name = "Sample";
-  global_object.type_id = "type:struct";
-  global_object.type_kind = elf_static_view::TypeKind::Struct;
-  global_object.availability = elf_static_view::Availability::StaticAddressKnown;
-  global_object.absolute_address = 0x1000;
-  global_object.children_lazy = true;
+    elf_static_view::ExpandedNode global_object;
+    global_object.path = "demo.global_object";
+    global_object.display_name = "global_object";
+    global_object.type_name = "Sample";
+    global_object.type_id = "type:struct";
+    global_object.type_kind = elf_static_view::TypeKind::Struct;
+    global_object.availability = elf_static_view::Availability::StaticAddressKnown;
+    global_object.absolute_address = 0x1000;
+    global_object.children_lazy = true;
 
-  elf_static_view::ExpandedNode first_person;
-  first_person.path = "demo.a_p";
-  first_person.display_name = "a_p";
-  first_person.type_name = "Sample";
-  first_person.type_id = "type:struct";
-  first_person.type_kind = elf_static_view::TypeKind::Struct;
-  first_person.availability = elf_static_view::Availability::StaticAddressKnown;
-  first_person.absolute_address = 0x1100;
-  first_person.children_lazy = true;
+    elf_static_view::ExpandedNode first_person;
+    first_person.path = "demo.a_p";
+    first_person.display_name = "a_p";
+    first_person.type_name = "Sample";
+    first_person.type_id = "type:struct";
+    first_person.type_kind = elf_static_view::TypeKind::Struct;
+    first_person.availability = elf_static_view::Availability::StaticAddressKnown;
+    first_person.absolute_address = 0x1100;
+    first_person.children_lazy = true;
 
-  elf_static_view::ExpandedNode second_person = first_person;
-  second_person.path = "demo.b_p";
-  second_person.display_name = "b_p";
-  second_person.absolute_address = 0x1200;
+    elf_static_view::ExpandedNode second_person = first_person;
+    second_person.path = "demo.b_p";
+    second_person.display_name = "b_p";
+    second_person.absolute_address = 0x1200;
 
-  elf_static_view::ExpandedNode counter;
-  counter.path = "demo::Derived.counter";
-  counter.display_name = "counter";
-  counter.type_name = "int";
-  counter.type_id = "type:int";
-  counter.type_kind = elf_static_view::TypeKind::Base;
-  counter.availability = elf_static_view::Availability::StaticAddressKnown;
-  counter.absolute_address = 0x2000;
+    elf_static_view::ExpandedNode counter;
+    counter.path = "demo::Derived.counter";
+    counter.display_name = "counter";
+    counter.type_name = "int";
+    counter.type_id = "type:int";
+    counter.type_kind = elf_static_view::TypeKind::Base;
+    counter.availability = elf_static_view::Availability::StaticAddressKnown;
+    counter.absolute_address = 0x2000;
 
-  elf_static_view::ExpandedNode shared;
-  shared.path = "demo::Derived.shared";
-  shared.display_name = "shared";
-  shared.type_name = "int";
-  shared.type_id = "type:int";
-  shared.type_kind = elf_static_view::TypeKind::Base;
-  shared.availability = elf_static_view::Availability::StaticAddressKnown;
-  shared.absolute_address = 0x2004;
+    elf_static_view::ExpandedNode shared;
+    shared.path = "demo::Derived.shared";
+    shared.display_name = "shared";
+    shared.type_name = "int";
+    shared.type_id = "type:int";
+    shared.type_kind = elf_static_view::TypeKind::Base;
+    shared.availability = elf_static_view::Availability::StaticAddressKnown;
+    shared.absolute_address = 0x2004;
 
-  elf_static_view::ExpandedNode array;
-  array.path = "root.array";
-  array.display_name = "array";
-  array.type_name = "int[3]";
-  array.type_id = "type:int_array";
-  array.type_kind = elf_static_view::TypeKind::Array;
-  array.availability = elf_static_view::Availability::StaticAddressKnown;
-  array.absolute_address = 0x3000;
-  array.array_count = 3;
-  array.array_stride = 4;
+    elf_static_view::ExpandedNode array;
+    array.path = "root.array";
+    array.display_name = "array";
+    array.type_name = "int[3]";
+    array.type_id = "type:int_array";
+    array.type_kind = elf_static_view::TypeKind::Array;
+    array.availability = elf_static_view::Availability::StaticAddressKnown;
+    array.absolute_address = 0x3000;
+    array.array_count = 3;
+    array.array_stride = 4;
 
-  for (std::uint64_t index = 0; index < 3; ++index) {
-    elf_static_view::ExpandedNode element;
-    element.path = "root.array[" + std::to_string(index) + "]";
-    element.display_name = "array[" + std::to_string(index) + "]";
-    element.type_name = "int";
-    element.type_id = "type:int";
-    element.type_kind = elf_static_view::TypeKind::Base;
-    element.availability = elf_static_view::Availability::StaticAddressKnown;
-    element.absolute_address = 0x3000 + index * 4;
-    array.children.push_back(std::move(element));
-  }
+    for (std::uint64_t index = 0; index < 3; ++index) {
+        elf_static_view::ExpandedNode element;
+        element.path = "root.array[" + std::to_string(index) + "]";
+        element.display_name = "array[" + std::to_string(index) + "]";
+        element.type_name = "int";
+        element.type_id = "type:int";
+        element.type_kind = elf_static_view::TypeKind::Base;
+        element.availability = elf_static_view::Availability::StaticAddressKnown;
+        element.absolute_address = 0x3000 + index * 4;
+        array.children.push_back(std::move(element));
+    }
 
-  elf_static_view::ExpandedNode tls_value;
-  tls_value.path = "demo.tls_value";
-  tls_value.display_name = "tls_value";
-  tls_value.type_name = "int";
-  tls_value.type_id = "type:int";
-  tls_value.type_kind = elf_static_view::TypeKind::Base;
-  tls_value.availability = elf_static_view::Availability::RuntimeOnly;
-  tls_value.absolute_address = 0x4000;
+    elf_static_view::ExpandedNode tls_value;
+    tls_value.path = "demo.tls_value";
+    tls_value.display_name = "tls_value";
+    tls_value.type_name = "int";
+    tls_value.type_id = "type:int";
+    tls_value.type_kind = elf_static_view::TypeKind::Base;
+    tls_value.availability = elf_static_view::Availability::RuntimeOnly;
+    tls_value.absolute_address = 0x4000;
 
-  model.expanded = {global_object, first_person, second_person, counter, shared, array, tls_value};
-  return model;
+    model.expanded = {global_object, first_person, second_person, counter, shared, array, tls_value};
+    return model;
 }
 
-void verify_name_query_and_value_type() {
-  const auto model = make_model();
+void verify_name_query_and_value_type()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "global_object";
-  const auto results = elf_static_view::query_static_addresses(model, options);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "global_object";
+    const auto results = elf_static_view::query_static_addresses(model, options);
 
-  const auto* match = find_result(results, "demo.global_object");
-  expect_true(match != nullptr, "应返回 demo.global_object");
-  expect_true(match->value_type == "Sample", "应返回变量类型名称");
+    const auto* match = find_result(results, "demo.global_object");
+    expect_true(match != nullptr, "应返回 demo.global_object");
+    expect_true(match->value_type == "Sample", "应返回变量类型名称");
 }
 
-void verify_comma_name_query_and_path_rules() {
-  const auto model = make_model();
+void verify_comma_name_query_and_path_rules()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "global_object,counter";
-  options.path_rules_text = "demo::Derived.**\n!**.shared";
-  const auto results = elf_static_view::query_static_addresses(model, options);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "global_object,counter";
+    options.path_rules_text = "demo::Derived.**\n!**.shared";
+    const auto results = elf_static_view::query_static_addresses(model, options);
 
-  expect_true(find_result(results, "demo::Derived.counter") != nullptr,
-              "路径规则应保留 demo::Derived.counter");
-  expect_true(find_result(results, "demo.global_object") == nullptr,
-              "路径规则应过滤掉不在 demo::Derived 下的命中");
+    expect_true(find_result(results, "demo::Derived.counter") != nullptr, "路径规则应保留 demo::Derived.counter");
+    expect_true(find_result(results, "demo.global_object") == nullptr, "路径规则应过滤掉不在 demo::Derived 下的命中");
 }
 
-void verify_array_expansion() {
-  const auto model = make_model();
+void verify_array_expansion()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "array";
-  options.max_array_elements = 8;
-  const auto results = elf_static_view::query_static_addresses(model, options);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "array";
+    options.max_array_elements = 8;
+    const auto results = elf_static_view::query_static_addresses(model, options);
 
-  expect_true(find_result(results, "root.array[0]") != nullptr, "数组查询应返回首元素");
-  expect_true(find_result(results, "root.array[1]") != nullptr, "数组查询应返回后续元素");
+    expect_true(find_result(results, "root.array[0]") != nullptr, "数组查询应返回首元素");
+    expect_true(find_result(results, "root.array[1]") != nullptr, "数组查询应返回后续元素");
 }
 
-void verify_composite_members_are_not_flattened_by_default() {
-  const auto model = make_model();
+void verify_composite_members_are_not_flattened_by_default()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "global_object";
-  const auto results = elf_static_view::query_static_addresses(model, options);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "global_object";
+    const auto results = elf_static_view::query_static_addresses(model, options);
 
-  expect_true(find_result(results, "demo.global_object") != nullptr,
-              "默认查询应继续返回父对象");
-  expect_true(find_result(results, "demo.global_object.name") == nullptr,
-              "默认查询不应展开结构体成员");
-  expect_true(find_result(results, "demo.global_object.values[0]") == nullptr,
-              "默认查询不应展开结构体内数组成员");
+    expect_true(find_result(results, "demo.global_object") != nullptr, "默认查询应继续返回父对象");
+    expect_true(find_result(results, "demo.global_object.name") == nullptr, "默认查询不应展开结构体成员");
+    expect_true(find_result(results, "demo.global_object.values[0]") == nullptr, "默认查询不应展开结构体内数组成员");
 }
 
-void verify_composite_members_flatten_before_filtering() {
-  const auto model = make_model();
+void verify_composite_members_flatten_before_filtering()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "global_object";
-  options.flatten_composite_members = true;
-  options.max_array_elements = 2;
-  const auto results = elf_static_view::query_static_addresses(model, options);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "global_object";
+    options.flatten_composite_members = true;
+    options.max_array_elements = 2;
+    const auto results = elf_static_view::query_static_addresses(model, options);
 
-  expect_true(find_result(results, "demo.global_object") != nullptr,
-              "展平查询应保留父对象");
-  expect_true(find_result(results, "demo.global_object.name") != nullptr,
-              "父对象名称应命中结构体成员");
-  expect_true(find_result(results, "demo.global_object.values[0]") != nullptr,
-              "父对象名称应命中结构体内数组首元素");
-  expect_true(find_result(results, "demo.global_object.values[1]") != nullptr,
-              "父对象名称应命中结构体内数组后续元素");
-  expect_true(find_result(results, "demo.global_object.values[2]") == nullptr,
-              "结构体内数组应继续受 max_array_elements 限制");
+    expect_true(find_result(results, "demo.global_object") != nullptr, "展平查询应保留父对象");
+    expect_true(find_result(results, "demo.global_object.name") != nullptr, "父对象名称应命中结构体成员");
+    expect_true(find_result(results, "demo.global_object.values[0]") != nullptr, "父对象名称应命中结构体内数组首元素");
+    expect_true(find_result(results, "demo.global_object.values[1]") != nullptr,
+                "父对象名称应命中结构体内数组后续元素");
+    expect_true(find_result(results, "demo.global_object.values[2]") == nullptr,
+                "结构体内数组应继续受 max_array_elements 限制");
 }
 
-void verify_composite_member_paths_keep_instance_names() {
-  const auto model = make_model();
+void verify_composite_member_paths_keep_instance_names()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "name";
-  options.flatten_composite_members = true;
-  const auto results = elf_static_view::query_static_addresses(model, options);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "name";
+    options.flatten_composite_members = true;
+    const auto results = elf_static_view::query_static_addresses(model, options);
 
-  expect_true(find_result(results, "demo.a_p.name") != nullptr,
-              "不同实例的成员路径应保留 a_p 前缀");
-  expect_true(find_result(results, "demo.b_p.name") != nullptr,
-              "不同实例的成员路径应保留 b_p 前缀");
-  expect_true(find_result(results, "demo.a_p.name#2") == nullptr,
-              "路径天然不重复时不应追加去重后缀");
-  expect_true(find_result(results, "demo.b_p.name#2") == nullptr,
-              "路径天然不重复时不应追加去重后缀");
+    expect_true(find_result(results, "demo.a_p.name") != nullptr, "不同实例的成员路径应保留 a_p 前缀");
+    expect_true(find_result(results, "demo.b_p.name") != nullptr, "不同实例的成员路径应保留 b_p 前缀");
+    expect_true(find_result(results, "demo.a_p.name#2") == nullptr, "路径天然不重复时不应追加去重后缀");
+    expect_true(find_result(results, "demo.b_p.name#2") == nullptr, "路径天然不重复时不应追加去重后缀");
 }
 
-void verify_runtime_only_filtered_by_default() {
-  const auto model = make_model();
+void verify_runtime_only_filtered_by_default()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "tls_value";
-  const auto results = elf_static_view::query_static_addresses(model, options);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "tls_value";
+    const auto results = elf_static_view::query_static_addresses(model, options);
 
-  expect_true(results.empty(), "默认不应返回 runtime only 节点");
+    expect_true(results.empty(), "默认不应返回 runtime only 节点");
 }
 
-void verify_duplicate_import_paths_have_distinct_keys() {
-  elf_static_view::LightweightExport document;
-  document.variables.push_back(elf_static_view::LightweightVariableRecord {
-      .path = "root.member",
-      .name = "member",
-      .type_name = "int",
-      .address = 0x5000,
-  });
-  document.variables.push_back(elf_static_view::LightweightVariableRecord {
-      .path = "root.member",
-      .name = "member",
-      .type_name = "int",
-      .address = 0x5004,
-  });
+void verify_duplicate_import_paths_have_distinct_keys()
+{
+    elf_static_view::LightweightExport document;
+    document.variables.push_back(elf_static_view::LightweightVariableRecord{
+        .path = "root.member",
+        .name = "member",
+        .type_name = "int",
+        .address = 0x5000,
+    });
+    document.variables.push_back(elf_static_view::LightweightVariableRecord{
+        .path = "root.member",
+        .name = "member",
+        .type_name = "int",
+        .address = 0x5004,
+    });
 
-  const auto model = elf_static_view::build_lightweight_project_model(document, "legacy-lightweight.esv");
-  const auto results = elf_static_view::query_static_addresses(model);
+    const auto model = elf_static_view::build_lightweight_project_model(document, "legacy-lightweight.esv");
+    const auto results = elf_static_view::query_static_addresses(model);
 
-  expect_true(results.size() == 2, "重复精简路径导入后应保留两个可查询节点");
-  expect_true(find_result(results, "root.member") != nullptr, "首个重复路径应保持原始查询 key");
-  expect_true(find_result(results, "root.member#2") != nullptr, "后续重复路径应使用稳定兼容查询 key");
+    expect_true(results.size() == 2, "重复精简路径导入后应保留两个可查询节点");
+    expect_true(find_result(results, "root.member") != nullptr, "首个重复路径应保持原始查询 key");
+    expect_true(find_result(results, "root.member#2") != nullptr, "后续重复路径应使用稳定兼容查询 key");
 }
 
-void verify_session_cache_reuse() {
-  const auto model = make_model();
+void verify_session_cache_reuse()
+{
+    const auto model = make_model();
 
-  elf_static_view::StaticAddressQuerySession session(model);
-  elf_static_view::StaticAddressQueryOptions options;
-  options.name_query_text = "global_object";
+    elf_static_view::StaticAddressQuerySession session(model);
+    elf_static_view::StaticAddressQueryOptions options;
+    options.name_query_text = "global_object";
 
-  const auto first = session.query(options);
-  const auto second = session.query(options);
+    const auto first = session.query(options);
+    const auto second = session.query(options);
 
-  expect_true(first.size() == second.size(), "相同查询应返回相同数量");
-  expect_true(!first.empty(), "缓存测试应命中结果");
-  expect_true(first.front().key == second.front().key, "缓存结果 key 应稳定");
-  expect_true(first.front().value == second.front().value, "缓存结果 value 应稳定");
-  expect_true(first.front().value_type == second.front().value_type, "缓存结果类型应稳定");
+    expect_true(first.size() == second.size(), "相同查询应返回相同数量");
+    expect_true(!first.empty(), "缓存测试应命中结果");
+    expect_true(first.front().key == second.front().key, "缓存结果 key 应稳定");
+    expect_true(first.front().value == second.front().value, "缓存结果 value 应稳定");
+    expect_true(first.front().value_type == second.front().value_type, "缓存结果类型应稳定");
 }
 
-}  // namespace
+} // namespace
 
-int main() {
-  try {
-    verify_name_query_and_value_type();
-    verify_comma_name_query_and_path_rules();
-    verify_array_expansion();
-    verify_composite_members_are_not_flattened_by_default();
-    verify_composite_members_flatten_before_filtering();
-    verify_composite_member_paths_keep_instance_names();
-    verify_runtime_only_filtered_by_default();
-    verify_duplicate_import_paths_have_distinct_keys();
-    verify_session_cache_reuse();
-    return 0;
-  } catch (const std::exception& error) {
-    std::fprintf(stderr, "static address query tests failed: %s\n", error.what());
-    return 1;
-  }
+int main()
+{
+    try {
+        verify_name_query_and_value_type();
+        verify_comma_name_query_and_path_rules();
+        verify_array_expansion();
+        verify_composite_members_are_not_flattened_by_default();
+        verify_composite_members_flatten_before_filtering();
+        verify_composite_member_paths_keep_instance_names();
+        verify_runtime_only_filtered_by_default();
+        verify_duplicate_import_paths_have_distinct_keys();
+        verify_session_cache_reuse();
+        return 0;
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "static address query tests failed: %s\n", error.what());
+        return 1;
+    }
 }

@@ -8,7 +8,7 @@ namespace elf_static_view::elf {
 
 class RawDwarfReader {
 public:
-  [[nodiscard]] RawDwarfDocument load(const std::string& file_path) const;
+    [[nodiscard]] RawDwarfDocument load(const std::string& file_path) const;
 };
 
-}  // namespace elf_static_view::elf
+} // namespace elf_static_view::elf

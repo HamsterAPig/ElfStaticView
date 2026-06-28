@@ -6,7 +6,7 @@ namespace elf_static_view::ui {
 
 class MainWindow {
 public:
-  bool render(AppState& state);
+    bool render(AppState& state);
 };
 
-}  // namespace elf_static_view::ui
+} // namespace elf_static_view::ui
