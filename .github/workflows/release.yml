@@ -53,20 +53,7 @@ jobs:
 
       - name: Run Tests
         shell: pwsh
-        run: |
-          $testBinaries = @(
-            (Join-Path $PWD "build\tests\Release\elf_static_view_tests.exe"),
-            (Join-Path $PWD "build\tests\Release\elf_static_view_perf_tests.exe"),
-            (Join-Path $PWD "build\tests\Release\elf_static_view_static_address_query_tests.exe")
-          )
-
-          foreach ($testBinary in $testBinaries) {
-            if (-not (Test-Path $testBinary)) {
-              throw "缺少测试可执行文件：$testBinary"
-            }
-          }
-
-          ctest --test-dir build --build-config Release --output-on-failure
+        run: ctest --test-dir build --output-on-failure
 
       - name: Collect Release Executables
         shell: pwsh
