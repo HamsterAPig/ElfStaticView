@@ -59,7 +59,7 @@ jobs:
         shell: pwsh
         run: |
           $distDir = Join-Path $PWD "dist"
-          $releaseDir = Join-Path $PWD "build\Release"
+          $releaseDir = Join-Path $PWD "build"
           $suffix = "${{ github.ref_name }}-windows-x64"
           $guiExe = Join-Path $distDir "ElfStaticView-$suffix.exe"
           $cliExe = Join-Path $distDir "ElfStaticView-CLI-$suffix.exe"
