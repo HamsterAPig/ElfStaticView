@@ -60,12 +60,24 @@ namespace {
         std::vector<std::pair<Dwarf_Half, Dwarf_Half>> attributes;
     };
 
+
+    // 成员描述（仅对内嵌 DW_TAG_member 的 struct/union 类型有效）
+    struct ManualMemberDescriptor {
+        std::optional<std::string> name;
+        std::optional<std::string> type_signature_hex; // DW_FORM_ref_sig8
+        std::optional<std::uint64_t> byte_offset;       // DW_AT_data_member_location, 常量形式
+        std::optional<std::uint64_t> bit_offset;        // DW_AT_data_bit_offset 或 DW_AT_bit_offset
+        std::optional<std::uint64_t> bit_size;          // DW_AT_bit_size
+    };
     struct ManualTypeDescriptor {
         Dwarf_Half tag = 0;
         std::optional<std::string> name;
         std::optional<std::string> referenced_signature_hex;
         std::vector<std::uint64_t> dimensions;
         std::optional<std::uint64_t> byte_size;
+        std::vector<ManualMemberDescriptor> members;
+        std::vector<std::string> enumerators;
+        std::vector<ManualTypeDescriptor> nested_types;
     };
 
     struct ManualTypeUnitContext {
@@ -401,6 +413,213 @@ namespace {
         }
     }
 
+// 手工解析 struct/union/enum/array 类型的子 DIE 序列
+// 根 DIE 属性已消费完毕，cursor 指向其后第一个字节
+    void manual_parse_child_dies(const std::vector<std::uint8_t>& types,
+                                 std::size_t& cursor,
+                                 const std::size_t unit_end,
+                                 const std::unordered_map<std::uint64_t, ManualAbbrevEntry>& abbrev_entries,
+                                 const std::vector<std::uint8_t>& strings,
+                                 const std::vector<std::uint8_t>& string_offsets,
+                                 const std::vector<std::uint8_t>& line_strings,
+                                 const ManualTypeUnitContext& unit_context,
+                                 ManualTypeDescriptor& descriptor)
+    {
+        while (cursor < unit_end) {
+            const auto child_code = read_uleb128(types, cursor);
+            if (child_code == 0) {
+                break; // 子 DIE 列表终止符
+            }
+            auto child_it = abbrev_entries.find(child_code);
+            if (child_it == abbrev_entries.end()) {
+                break; // 未知缩写码，放弃解析当前 unit 的子 DIE
+            }
+            const auto child_tag = child_it->second.tag;
+
+            if (child_tag == DW_TAG_subrange_type) {
+                // 数组维度解析
+                std::optional<std::uint64_t> upper_bound;
+                std::optional<std::uint64_t> count;
+                for (const auto& [attr, form] : child_it->second.attributes) {
+                    auto eff_form = (form == DW_FORM_indirect)
+                                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                        : form;
+                    if (attr == DW_AT_upper_bound) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            upper_bound = val;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                    } else if (attr == DW_AT_count) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            count = val;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                    } else {
+                        manual_skip_form(eff_form, types, cursor);
+                    }
+                }
+                if (upper_bound.has_value()) {
+                    descriptor.dimensions.push_back(upper_bound.value() + 1);
+                } else if (count.has_value()) {
+                    descriptor.dimensions.push_back(count.value());
+                } else {
+                    descriptor.dimensions.push_back(0);
+                }
+            } else if (child_tag == DW_TAG_member) {
+                ManualMemberDescriptor member;
+                for (const auto& [attr, form] : child_it->second.attributes) {
+                    auto eff_form = (form == DW_FORM_indirect)
+                                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                        : form;
+                    if (attr == DW_AT_name) {
+                        if (eff_form == DW_FORM_strp) {
+                            if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                                member.name = manual_read_string(
+                                    strings, static_cast<std::uint32_t>(val.value()));
+                            }
+                        } else if (eff_form == DW_FORM_string) {
+                            const auto name_end = std::find(types.begin() + static_cast<std::ptrdiff_t>(cursor),
+                                                            types.end(), static_cast<std::uint8_t>(0));
+                            if (name_end != types.end()) {
+                                member.name = std::string(
+                                    reinterpret_cast<const char*>(types.data() + cursor),
+                                    static_cast<std::size_t>(name_end - (types.begin() + static_cast<std::ptrdiff_t>(cursor))));
+                                cursor = static_cast<std::size_t>(name_end - types.begin()) + 1;
+                            }
+                        } else if (eff_form == DW_FORM_strx || eff_form == DW_FORM_strx1 ||
+                                   eff_form == DW_FORM_strx2 || eff_form == DW_FORM_strx3 ||
+                                   eff_form == DW_FORM_strx4) {
+                            if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                                member.name = manual_read_strx_string(
+                                    string_offsets, strings, unit_context, val.value());
+                            }
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    if (attr == DW_AT_type && eff_form == DW_FORM_ref_sig8) {
+                        Dwarf_Sig8 ref_sig{};
+                        std::memcpy(ref_sig.signature, types.data() + cursor, sizeof(ref_sig.signature));
+                        member.type_signature_hex = sig8_to_hex(ref_sig);
+                        cursor += 8;
+                        continue;
+                    }
+                    if (attr == DW_AT_data_member_location) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            member.byte_offset = val;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    if (attr == DW_AT_data_bit_offset || attr == DW_AT_bit_offset) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            member.bit_offset = val;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    if (attr == DW_AT_bit_size) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            member.bit_size = val;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                descriptor.members.push_back(std::move(member));
+            } else if (child_tag == DW_TAG_enumerator) {
+                std::optional<std::string> enum_name;
+                for (const auto& [attr, form] : child_it->second.attributes) {
+                    auto eff_form = (form == DW_FORM_indirect)
+                                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                        : form;
+                    if (attr == DW_AT_name) {
+                        if (eff_form == DW_FORM_strp) {
+                            if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                                enum_name = manual_read_string(
+                                    strings, static_cast<std::uint32_t>(val.value()));
+                            }
+                        } else if (eff_form == DW_FORM_string) {
+                            const auto name_end = std::find(types.begin() + static_cast<std::ptrdiff_t>(cursor),
+                                                            types.end(), static_cast<std::uint8_t>(0));
+                            if (name_end != types.end()) {
+                                enum_name = std::string(
+                                    reinterpret_cast<const char*>(types.data() + cursor),
+                                    static_cast<std::size_t>(name_end - (types.begin() + static_cast<std::ptrdiff_t>(cursor))));
+                                cursor = static_cast<std::size_t>(name_end - types.begin()) + 1;
+                            }
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                if (enum_name.has_value()) {
+                    descriptor.enumerators.push_back(enum_name.value());
+                }
+            } else if (child_tag == DW_TAG_structure_type ||
+                       child_tag == DW_TAG_class_type ||
+                       child_tag == DW_TAG_union_type) {
+                // 类内嵌套的匿名 union/struct 类型：递归解析子 DIE 及其成员
+                ManualTypeDescriptor nested;
+                nested.tag = child_tag;
+                for (const auto& [attr, form] : child_it->second.attributes) {
+                    auto eff_form = (form == DW_FORM_indirect)
+                                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                        : form;
+                    if (attr == DW_AT_name && eff_form == DW_FORM_strp) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            nested.name = manual_read_string(
+                                strings, static_cast<std::uint32_t>(val.value()));
+                        }
+                        continue;
+                    }
+                    if (attr == DW_AT_name && eff_form == DW_FORM_string) {
+                        const auto name_end = std::find(types.begin() + static_cast<std::ptrdiff_t>(cursor),
+                                                        types.end(), static_cast<std::uint8_t>(0));
+                        if (name_end != types.end()) {
+                            nested.name = std::string(
+                                reinterpret_cast<const char*>(types.data() + cursor),
+                                static_cast<std::size_t>(name_end - (types.begin() + static_cast<std::ptrdiff_t>(cursor))));
+                            cursor = static_cast<std::size_t>(name_end - types.begin()) + 1;
+                        }
+                        continue;
+                    }
+                    if (attr == DW_AT_byte_size) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            nested.byte_size = val;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                manual_parse_child_dies(types, cursor, unit_end, abbrev_entries,
+                                        strings, string_offsets, line_strings,
+                                        unit_context, nested);
+                descriptor.nested_types.push_back(std::move(nested));
+
+            } else {
+                // 跳过不感兴趣的子 DIE（如 DW_TAG_inheritance）
+                for (const auto& form : child_it->second.attributes | std::views::values) {
+                    auto eff_form = (form == DW_FORM_indirect)
+                                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                        : form;
+                    manual_skip_form(eff_form, types, cursor);
+                }
+            }
+        }
+    }
+
     [[nodiscard]] std::unordered_map<std::string, ManualTypeDescriptor>& manual_type_descriptors(
         const std::string& file_path)
     {
@@ -552,62 +771,15 @@ namespace {
                             }
                             manual_skip_form(effective_form, types, cursor);
                         }
-                        if (descriptor.tag == DW_TAG_array_type) {
-                            // 现在 cursor 指向根 DIE 之后，即子 DIE 序列的起始
-                            while (cursor < unit_end) {
-                                const auto child_code = read_uleb128(types, cursor);
-                                if (child_code == 0) {
-                                    break; // 子 DIE 列表结束
-                                }
-                                auto child_it = abbrev_entries.find(child_code);
-                                if (child_it == abbrev_entries.end()) {
-                                    // 遇到未知缩写码，放弃解析当前 unit 的子 DIE 维度
-                                    break;
-                                }
-                                if (child_it->second.tag != DW_TAG_subrange_type) {
-                                    // 跳过不感兴趣的子 DIE（如 DW_TAG_enumeration_type）
-                                    for (const auto& form : child_it->second.attributes | std::views::values) {
-                                        auto eff_form = (form == DW_FORM_indirect)
-                                                            ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
-                                                            : form;
-                                        manual_skip_form(eff_form, types, cursor);
-                                    }
-                                    continue;
-                                }
-
-                                // grep upper_bound / count
-                                std::optional<std::uint64_t> upper_bound;
-                                std::optional<std::uint64_t> count;
-                                for (const auto& [attr, form] : child_it->second.attributes) {
-                                    auto eff_form = (form == DW_FORM_indirect)
-                                                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
-                                                        : form;
-                                    if (attr == DW_AT_upper_bound) {
-                                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
-                                            upper_bound = val;
-                                        } else {
-                                            manual_skip_form(eff_form, types, cursor);
-                                        }
-                                    } else if (attr == DW_AT_count) {
-                                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
-                                            count = val;
-                                        } else {
-                                            manual_skip_form(eff_form, types, cursor);
-                                        }
-                                    } else {
-                                        manual_skip_form(eff_form, types, cursor);
-                                    }
-                                }
-
-                                if (upper_bound.has_value()) {
-                                    descriptor.dimensions.push_back(upper_bound.value() + 1);
-                                } else if (count.has_value()) {
-                                    descriptor.dimensions.push_back(count.value());
-                                } else {
-                                    // 没有界限信息，填入 0 表示未知维度
-                                    descriptor.dimensions.push_back(0);
-                                }
-                            }
+                        // struct/union/class/enum/array 都存在子 DIE 需要解析
+                        if (descriptor.tag == DW_TAG_structure_type ||
+                            descriptor.tag == DW_TAG_class_type ||
+                            descriptor.tag == DW_TAG_union_type ||
+                            descriptor.tag == DW_TAG_enumeration_type ||
+                            descriptor.tag == DW_TAG_array_type) {
+                            manual_parse_child_dies(types, cursor, unit_end, abbrev_entries,
+                                                    strings, string_offsets, line_strings,
+                                                    unit_context, descriptor);
                         }
                         descriptors.emplace(signature_hex, std::move(descriptor));
                     } catch (...) {
@@ -983,7 +1155,7 @@ namespace {
 
             auto next_scope = scope_stack;
             auto next_tags = scope_tag_stack;
-            if (tag == DW_TAG_namespace || tag == DW_TAG_class_type || tag == DW_TAG_structure_type) {
+            if (tag == DW_TAG_namespace || tag == DW_TAG_class_type || tag == DW_TAG_structure_type || tag == DW_TAG_union_type) {
                 next_scope.push_back(maybe_name(die_name(current.get()), "<anon>"));
                 next_tags.push_back(tag);
                 index_class_declaration_scopes(context, current.get(), is_info, next_scope, next_tags);
@@ -1371,6 +1543,77 @@ namespace {
                         type.qualified_of = TypeRef{referenced_id};
                     }
                 }
+                // 填入手工解析的成员
+                for (const auto& m : iter->second.members) {
+                    TypeMember member;
+                    member.name = m.name.value_or("<anon>");
+                    member.availability = Availability::StaticLayoutKnown;
+                    if (m.type_signature_hex.has_value()) {
+                        member.type = TypeRef{make_manual_type_id(m.type_signature_hex.value())};
+                    }
+                    if (m.byte_offset.has_value()) {
+                        member.address.kind = AddressKind::MemberOffset;
+                        member.address.relative_offset = static_cast<std::int64_t>(m.byte_offset.value());
+                    }
+                    if (m.bit_offset.has_value()) {
+                        member.address.kind = AddressKind::BitField;
+                        member.address.bit_offset = m.bit_offset.value();
+                    }
+                    if (m.bit_size.has_value()) {
+                        member.address.kind = AddressKind::BitField;
+                        member.address.bit_size = m.bit_size.value();
+                    }
+                    type.members.push_back(std::move(member));
+                }
+                // 填入手工解析的枚举值
+                for (const auto& ev : iter->second.enumerators) {
+                    type.enum_values.push_back(ev);
+                }
+                // 填入手工解析的嵌套类型（如类内匿名 union/struct）
+                for (auto& nested_desc : iter->second.nested_types) {
+                    auto nested_type_id = type_id + "/nested@" + std::to_string(context.types.size());
+                    TypeNode nested_type;
+                    nested_type.id = nested_type_id;
+                    nested_type.kind = map_type_kind(nested_desc.tag);
+                    if (nested_desc.name.has_value() && !nested_desc.name->empty()) {
+                        nested_type.name = nested_desc.name.value();
+                    } else if (nested_desc.tag == DW_TAG_union_type) {
+                        nested_type.name = "<anonymous union>";
+                    } else {
+                        nested_type.name = "<anonymous struct>";
+                    }
+                    if (nested_desc.byte_size.has_value()) {
+                        nested_type.byte_size = nested_desc.byte_size;
+                    }
+                    for (const auto& nm : nested_desc.members) {
+                        TypeMember member;
+                        member.name = nm.name.value_or("<anon>");
+                        member.availability = Availability::StaticLayoutKnown;
+                        if (nm.type_signature_hex.has_value()) {
+                            member.type = TypeRef{make_manual_type_id(nm.type_signature_hex.value())};
+                        }
+                        if (nm.byte_offset.has_value()) {
+                            member.address.kind = AddressKind::MemberOffset;
+                            member.address.relative_offset = static_cast<std::int64_t>(nm.byte_offset.value());
+                        }
+                        if (nm.bit_offset.has_value()) {
+                            member.address.kind = AddressKind::BitField;
+                            member.address.bit_offset = nm.bit_offset.value();
+                        }
+                        if (nm.bit_size.has_value()) {
+                            member.address.kind = AddressKind::BitField;
+                            member.address.bit_size = nm.bit_size.value();
+                        }
+                        nested_type.members.push_back(std::move(member));
+                    }
+                    for (const auto& nev : nested_desc.enumerators) {
+                        nested_type.enum_values.push_back(nev);
+                    }
+                    context.type_ids[nested_type_id] = nested_type.id;
+                    context.recorded_type_ids.insert(nested_type_id);
+                    context.types.push_back(std::move(nested_type));
+                }
+
                 context.type_ids[type_id] = type.id;
                 context.recorded_type_ids.insert(type_id);
                 context.types.push_back(std::move(type));
@@ -1571,7 +1814,15 @@ namespace {
         context.type_ids[type_id] = type.id;
         context.recorded_type_ids.insert(type_id);
         type.kind = map_type_kind(tag);
-        type.name = maybe_name(declaration_name, type.id);
+        if (declaration_name.has_value() && !declaration_name->empty()) {
+            type.name = declaration_name.value();
+        } else if (tag == DW_TAG_structure_type || tag == DW_TAG_class_type) {
+            type.name = "<anonymous struct>";
+        } else if (tag == DW_TAG_union_type) {
+            type.name = "<anonymous union>";
+        } else {
+            type.name = type.id;
+        }
 
         if (const auto attr = attribute_of(context.debug, die, DW_AT_byte_size); attr.has_value()) {
             type.byte_size = unsigned_attr(attr->get());
@@ -1692,6 +1943,9 @@ namespace {
                     if (const auto name = die_name(current.get()); name.has_value()) {
                         type.enum_values.push_back(name.value());
                     }
+                } else if (is_class_scope_tag(child_tag)) {
+                    // 递归记录类内嵌套的匿名 union/struct 类型
+                    record_type(context, current.get(), child_tag, is_info);
                 }
 
                 auto sibling = sibling_of(context.debug, current.get(), is_info);
