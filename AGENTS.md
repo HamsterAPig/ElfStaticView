@@ -137,7 +137,7 @@ CMake 编写要求：
 │   ├── analysis/
 │   ├── config/
 │   ├── logging/
-│   └── main.cpp
+│   └── main.cc
 ├── tests/
 │   ├── elf/
 │   ├── analysis/
@@ -152,7 +152,7 @@ CMake 编写要求：
 2. `src/analysis`：静态分析、索引、结构化视图数据生成。
 3. `src/config`：配置模型与 YAML 读取。
 4. `src/logging`：spdlog 初始化与日志入口。
-5. `src/main.cpp`：程序入口，只做参数解析、初始化和启动编排。
+5. `src/main.cc`：程序入口，只做参数解析、初始化和启动编排。
 6. `include/elf_static_view`：稳定对外接口；内部实现细节不要提前暴露。
 7. `tests`：单元测试、集成测试和 fixture 数据。
 8. `cmake`：工具链、编译选项和辅助 CMake 模块。

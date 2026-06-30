@@ -1,0 +1,62 @@
+set(ELF_STATIC_VIEW_INSTALL_CONFIGDIR "${CMAKE_INSTALL_LIBDIR}/cmake/ElfStaticView")
+
+configure_package_config_file(
+  "${PROJECT_SOURCE_DIR}/cmake/ElfStaticViewConfig.cmake.in"
+  "${CMAKE_BINARY_DIR}/ElfStaticViewConfig.cmake"
+  INSTALL_DESTINATION "${ELF_STATIC_VIEW_INSTALL_CONFIGDIR}"
+)
+
+write_basic_package_version_file(
+  "${CMAKE_BINARY_DIR}/ElfStaticViewConfigVersion.cmake"
+  VERSION "${PROJECT_VERSION}"
+  COMPATIBILITY SameMajorVersion
+)
+
+install(
+  TARGETS elf_static_view_core
+  EXPORT ElfStaticViewTargets
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)
+
+install(
+  TARGETS yaml-cpp
+  EXPORT ElfStaticViewTargets
+  RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+  LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+  INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)
+
+install(
+  FILES
+    "${CMAKE_BINARY_DIR}/3rdparty/libdwarf-code/src/lib/libdwarf/${CMAKE_STATIC_LIBRARY_PREFIX}dwarf${CMAKE_STATIC_LIBRARY_SUFFIX}"
+  DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+)
+
+install(
+  DIRECTORY include/
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)
+
+install(
+  FILES
+    "${ELF_STATIC_VIEW_VERSION_HEADER}"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/elf_static_view"
+)
+
+install(
+  EXPORT ElfStaticViewTargets
+  FILE ElfStaticViewTargets.cmake
+  NAMESPACE elf_static_view::
+  DESTINATION "${ELF_STATIC_VIEW_INSTALL_CONFIGDIR}"
+)
+
+install(
+  FILES
+    "${CMAKE_BINARY_DIR}/ElfStaticViewConfig.cmake"
+    "${CMAKE_BINARY_DIR}/ElfStaticViewConfigVersion.cmake"
+  DESTINATION "${ELF_STATIC_VIEW_INSTALL_CONFIGDIR}"
+)

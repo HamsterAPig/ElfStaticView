@@ -729,7 +729,7 @@ void verify_gcc_line_strp_fixture()
     expect_true(name_attr.has_value(), "第一个 CU 应存在 DW_AT_name");
     const auto name = elf_static_view::elf::string_attr(name_attr->get());
     expect_true(name.has_value(), "DW_FORM_line_strp 的 name 应可被读取");
-    expect_true(name->find("debug_sup_minimal.cpp") != std::string::npos, "DW_FORM_line_strp 的 name 应回到源码文件名");
+    expect_true(name->find("debug_sup_minimal.cc") != std::string::npos, "DW_FORM_line_strp 的 name 应回到源码文件名");
 
     auto comp_dir_attr = elf_static_view::elf::attribute_of(debug, cu_die, DW_AT_comp_dir);
     expect_true(comp_dir_attr.has_value(), "第一个 CU 应存在 DW_AT_comp_dir");

@@ -4,6 +4,6 @@ project(ElfStaticViewPackageFindTest LANGUAGES CXX)
 
 find_package(ElfStaticView CONFIG REQUIRED)
 
-add_executable(elf_static_view_package_find_smoke main.cpp)
+add_executable(elf_static_view_package_find_smoke main.cc)
 target_link_libraries(elf_static_view_package_find_smoke PRIVATE elf_static_view::core)
 target_compile_features(elf_static_view_package_find_smoke PRIVATE cxx_std_20)

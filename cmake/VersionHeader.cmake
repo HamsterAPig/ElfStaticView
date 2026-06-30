@@ -1,0 +1,19 @@
+
+set(ELF_STATIC_VIEW_GENERATED_INCLUDE_DIR "${CMAKE_BINARY_DIR}/generated")
+set(ELF_STATIC_VIEW_VERSION_HEADER "${ELF_STATIC_VIEW_GENERATED_INCLUDE_DIR}/elf_static_view/version.hpp")
+file(MAKE_DIRECTORY "${ELF_STATIC_VIEW_GENERATED_INCLUDE_DIR}/elf_static_view")
+
+add_custom_target(
+  elf_static_view_version_header ALL
+  COMMAND
+    "${CMAKE_COMMAND}"
+    -DSOURCE_DIR=${PROJECT_SOURCE_DIR}
+    -DOUTPUT_FILE=${ELF_STATIC_VIEW_VERSION_HEADER}
+    -DTEMP_FILE=${ELF_STATIC_VIEW_VERSION_HEADER}.tmp
+    -P "${PROJECT_SOURCE_DIR}/cmake/resolve_version.cmake"
+  BYPRODUCTS
+    "${ELF_STATIC_VIEW_VERSION_HEADER}"
+    "${ELF_STATIC_VIEW_VERSION_HEADER}.tmp"
+  VERBATIM
+  COMMENT "Resolving git-backed ElfStaticView version"
+)
