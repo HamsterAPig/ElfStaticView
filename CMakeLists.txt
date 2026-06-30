@@ -1,11 +1,20 @@
 cmake_minimum_required(VERSION 3.24)
 
+if(POLICY CMP0091)
+  cmake_policy(SET CMP0091 NEW)
+endif()
+
 project(
   ElfStaticView
   VERSION 0.1.0
   DESCRIPTION "Offline ELF/DWARF static variable explorer"
   LANGUAGES C CXX
 )
+
+if(MSVC)
+  set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  set(LIBDWARF_CRT "MT" CACHE STRING "Use static MSVC runtime for bundled libdwarf." FORCE)
+endif()
 
 include(CTest)
 include(FetchContent)

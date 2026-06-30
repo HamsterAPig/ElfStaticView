@@ -45,6 +45,22 @@ jobs:
           cmake --build build --config Release
           --target elf-static-view elf-static-view-cli
 
+      - name: Verify Release Runtime Imports
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $executables = @(
+            (Join-Path $PWD "build\elf-static-view.exe"),
+            (Join-Path $PWD "build\elf-static-view-cli.exe")
+          )
+          foreach ($exe in $executables) {
+            $imports = & llvm-readobj --coff-imports $exe
+            $forbidden = $imports | Select-String -Pattern 'MSVCP140D\.dll|VCRUNTIME140D\.dll|VCRUNTIME140_1D\.dll|ucrtbased\.dll|MSVCP140\.dll|VCRUNTIME140\.dll|VCRUNTIME140_1\.dll'
+            if ($forbidden) {
+              Write-Error "Release executable imports MSVC runtime DLLs: $exe"
+            }
+          }
+
       - name: Build Test Binaries
         shell: pwsh
         run: >
