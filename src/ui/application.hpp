@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ui/app_state.hpp"
+#include "ui/startup_diagnostics.hpp"
 #include "ui/ui_task_runner.hpp"
 
 #include <chrono>
@@ -65,6 +66,9 @@ private:
     std::uint64_t next_load_task_id_ = 1;
     std::uint64_t next_filter_task_id_ = 1;
     UiTaskRunner task_runner_;
+    bool imgui_context_created_ = false;
+    bool imgui_glfw_initialized_ = false;
+    bool imgui_opengl_initialized_ = false;
 };
 
 } // namespace elf_static_view::ui

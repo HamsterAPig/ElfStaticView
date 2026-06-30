@@ -4,8 +4,10 @@
 #include "elf_static_view/project.hpp"
 #include "logging/logger.hpp"
 #include "ui/application.hpp"
+#include "ui/startup_diagnostics.hpp"
 #include "ui/version_check.hpp"
 
+#include <algorithm>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -56,7 +58,10 @@ int run_with_access_violation_guard(EntryRunner runner, const int argc, char** a
 
 std::filesystem::path resolve_executable_path(char** argv)
 {
-    std::filesystem::path executable_path = argv[0];
+    std::filesystem::path executable_path = std::filesystem::current_path();
+    if (argv != nullptr && argv[0] != nullptr) {
+        executable_path = argv[0];
+    }
 #if defined(_WIN32)
     wchar_t module_path[MAX_PATH] = {};
     const DWORD module_path_length = GetModuleFileNameW(nullptr, module_path, MAX_PATH);
@@ -71,6 +76,7 @@ void print_usage()
 {
     std::cout << "用法:\n"
               << "  elf-static-view ui [file]                         打开图形界面，可选传入启动文件\n"
+              << "  elf-static-view diagnose                          输出 GUI 启动与 OpenGL 诊断信息\n"
               << "  elf-static-view scan <file> [--show-runtime-only] 扫描变量概览\n"
               << "  elf-static-view dump <file> [--format text|json] [--show-runtime-only]\n"
               << "                        [--only-static-known] [--symbol <name>]\n"
@@ -179,6 +185,16 @@ int run_cli(const int argc, char** argv)
     throw std::runtime_error("未知命令: " + options.command);
 }
 
+int run_diagnose()
+{
+    const auto report = elf_static_view::ui::run_graphics_diagnostics();
+    std::cout << elf_static_view::ui::render_graphics_diagnostics(report);
+    const bool has_supported_context = std::any_of(report.probes.begin(), report.probes.end(), [](const auto& probe) {
+        return probe.success;
+    });
+    return has_supported_context ? 0 : 2;
+}
+
 int run_ui(const int argc, char** argv)
 {
     std::optional<std::string> input_path;
@@ -200,6 +216,7 @@ int run_ui(const int argc, char** argv)
 
 int elf_static_view_entry(const int argc, char** argv)
 {
+    const bool ui_invocation = argc <= 1 || (argc > 1 && std::string(argv[1]) == "ui");
     try {
         if (argc == 1) {
             return run_ui(argc, argv);
@@ -208,12 +225,19 @@ int elf_static_view_entry(const int argc, char** argv)
         if (command == "ui") {
             return run_ui(argc, argv);
         }
+        if (command == "diagnose") {
+            return run_diagnose();
+        }
         if (command == "scan" || command == "dump" || command == "dwarf-dump") {
             return run_with_access_violation_guard(run_cli, argc, argv);
         }
         throw std::runtime_error("未知命令: " + command);
     } catch (const std::exception& error) {
         elf_static_view::logging::log(elf_static_view::logging::Level::Error, error.what());
+        elf_static_view::ui::append_startup_log(std::string("入口异常: ") + error.what());
+        if (ui_invocation) {
+            elf_static_view::ui::show_startup_error_dialog("ElfStaticView 启动失败", error.what());
+        }
         print_usage();
         return 1;
     }

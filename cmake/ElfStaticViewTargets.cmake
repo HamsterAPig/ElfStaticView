@@ -105,6 +105,7 @@ if(ELF_STATIC_VIEW_BUILD_UI)
     src/ui/application.cc
     src/ui/file_dialogs.cc
     src/ui/main_window.cc
+    src/ui/startup_diagnostics.cc
     src/ui/version_check.cc
   )
 

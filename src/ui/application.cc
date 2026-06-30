@@ -7,6 +7,7 @@
 #include "ui/file_dialogs.hpp"
 #include "ui/filter_matcher.hpp"
 #include "ui/main_window.hpp"
+#include "ui/startup_diagnostics.hpp"
 #include "ui/version_check.hpp"
 
 #if defined(_WIN32)
@@ -46,6 +47,7 @@ namespace {
     constexpr char kTaskRawDwarfExport[] = "raw_dwarf_export";
     constexpr char kTaskJsonPreview[] = "json_preview";
     constexpr char kTaskVersionCheck[] = "version_check";
+    constexpr unsigned int kGlShadingLanguageVersion = 0x8B8C;
 
     std::string read_all_text(const std::string& path)
     {
@@ -247,6 +249,15 @@ namespace {
         style.ScaleAllSizes(ui_scale);
     }
 
+    std::string safe_gl_string(const unsigned int name)
+    {
+        const auto* value = glGetString(name);
+        if (value == nullptr) {
+            return {};
+        }
+        return reinterpret_cast<const char*>(value);
+    }
+
 } // namespace
 
 Application::Application(UiLaunchOptions options) : options_(std::move(options)) {}
@@ -289,56 +300,100 @@ int Application::run()
 
 bool Application::initialize()
 {
+    append_startup_log("开始初始化 GUI");
+    install_startup_glfw_error_callback();
     enable_high_dpi_mode();
     if (glfwInit() == GLFW_FALSE) {
-        logging::log(logging::Level::Error, "glfwInit 失败");
+        std::string message = last_startup_glfw_error();
+        if (message.empty()) {
+            message = "glfwInit 失败";
+        }
+        logging::log(logging::Level::Error, message);
+        show_startup_error_dialog("ElfStaticView 启动失败", message);
         return false;
     }
 
-    glfwWindowHint(GLFW_SCALE_TO_MONITOR, GLFW_TRUE);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-#if defined(__APPLE__)
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
-#endif
-
     const std::string window_title = "ElfStaticView " + current_version_string();
-    window_ = glfwCreateWindow(1600, 960, window_title.c_str(), nullptr, nullptr);
-    if (window_ == nullptr) {
-        logging::log(logging::Level::Error, "glfwCreateWindow 失败");
+    const auto cleanup_failed_attempt = [this]() {
+        if (imgui_opengl_initialized_) {
+            ImGui_ImplOpenGL3_Shutdown();
+            imgui_opengl_initialized_ = false;
+        }
+        if (imgui_glfw_initialized_) {
+            ImGui_ImplGlfw_Shutdown();
+            imgui_glfw_initialized_ = false;
+        }
+        if (imgui_context_created_) {
+            ImGui::DestroyContext();
+            imgui_context_created_ = false;
+        }
+        if (window_ != nullptr) {
+            glfwDestroyWindow(window_);
+            window_ = nullptr;
+        }
+    };
+    for (const auto& candidate : opengl_context_candidates()) {
+        append_startup_log("尝试图形上下文: " + describe_opengl_candidate(candidate));
+        clear_startup_glfw_error();
+        apply_opengl_window_hints(candidate, true);
+
+        window_ = glfwCreateWindow(1600, 960, window_title.c_str(), nullptr, nullptr);
+        if (window_ == nullptr) {
+            std::string message = last_startup_glfw_error();
+            if (message.empty()) {
+                message = "glfwCreateWindow 失败";
+            }
+            append_startup_log("图形上下文失败: " + message);
+            continue;
+        }
+
+        glfwMakeContextCurrent(window_);
+        glfwSwapInterval(1);
+
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        imgui_context_created_ = true;
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        io.ConfigWindowsMoveFromTitleBarOnly = true;
+        float x_scale = 1.0F;
+        float y_scale = 1.0F;
+        glfwGetWindowContentScale(window_, &x_scale, &y_scale);
+        pending_ui_scale_ = sanitize_ui_scale(x_scale, y_scale);
+        apply_pending_ui_scale();
+
+        if (!ImGui_ImplGlfw_InitForOpenGL(window_, true)) {
+            append_startup_log("ImGui_ImplGlfw_InitForOpenGL 失败");
+            cleanup_failed_attempt();
+            continue;
+        }
+        imgui_glfw_initialized_ = true;
+        if (!ImGui_ImplOpenGL3_Init(candidate.glsl_version.c_str())) {
+            append_startup_log("ImGui_ImplOpenGL3_Init 失败: " + candidate.glsl_version);
+            cleanup_failed_attempt();
+            continue;
+        }
+        imgui_opengl_initialized_ = true;
+        append_startup_log("图形上下文初始化成功: " + describe_opengl_candidate(candidate));
+        append_startup_log("GL_VENDOR: " + safe_gl_string(GL_VENDOR));
+        append_startup_log("GL_RENDERER: " + safe_gl_string(GL_RENDERER));
+        append_startup_log("GL_VERSION: " + safe_gl_string(GL_VERSION));
+        append_startup_log("GLSL_VERSION: " + safe_gl_string(kGlShadingLanguageVersion));
+        break;
+    }
+
+    if (window_ == nullptr || !imgui_opengl_initialized_) {
+        const std::string message = "无法创建可用的 OpenGL 图形上下文，请更新显卡驱动或运行 CLI diagnose 查看详情。";
+        logging::log(logging::Level::Error, message);
+        show_startup_error_dialog("ElfStaticView 启动失败", message);
         shutdown();
         return false;
     }
 
-    glfwMakeContextCurrent(window_);
-    glfwSwapInterval(1);
     glfwSetWindowUserPointer(window_, this);
     glfwSetDropCallback(window_, &Application::glfw_drop_callback);
     glfwSetWindowContentScaleCallback(window_, &Application::glfw_content_scale_callback);
-
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-    io.ConfigWindowsMoveFromTitleBarOnly = true;
-    float x_scale = 1.0F;
-    float y_scale = 1.0F;
-    glfwGetWindowContentScale(window_, &x_scale, &y_scale);
-    pending_ui_scale_ = sanitize_ui_scale(x_scale, y_scale);
-    apply_pending_ui_scale();
-
-    if (!ImGui_ImplGlfw_InitForOpenGL(window_, true)) {
-        logging::log(logging::Level::Error, "ImGui_ImplGlfw_InitForOpenGL 失败");
-        shutdown();
-        return false;
-    }
-    if (!ImGui_ImplOpenGL3_Init("#version 330")) {
-        logging::log(logging::Level::Error, "ImGui_ImplOpenGL3_Init 失败");
-        shutdown();
-        return false;
-    }
 
     compile_filter_rules(state_.filters);
     try {
@@ -378,10 +433,19 @@ void Application::glfw_content_scale_callback(GLFWwindow* window, const float x_
 
 void Application::shutdown()
 {
-    if (window_ != nullptr) {
+    if (imgui_opengl_initialized_) {
         ImGui_ImplOpenGL3_Shutdown();
+        imgui_opengl_initialized_ = false;
+    }
+    if (imgui_glfw_initialized_) {
         ImGui_ImplGlfw_Shutdown();
+        imgui_glfw_initialized_ = false;
+    }
+    if (imgui_context_created_) {
         ImGui::DestroyContext();
+        imgui_context_created_ = false;
+    }
+    if (window_ != nullptr) {
         glfwDestroyWindow(window_);
         window_ = nullptr;
     }
