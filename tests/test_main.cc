@@ -530,6 +530,17 @@ void verify_ref_sig8_debug_types_fixture()
     expect_contains(
         output, "global_value [StaticAddressKnown] RefTarget", "ref_sig8 fixture 应把 global_value 解析回 RefTarget");
     expect_contains(output, "consume::local [RuntimeOnly] RefTarget", "ref_sig8 fixture 应把 local 也解析回 RefTarget");
+    expect_contains(output, "global_value.flags [StaticLayoutKnown]", "ref_sig8 fixture 应展开成员数组 flags");
+    expect_contains(output, "global_value.flags[0] [StaticLayoutKnown]", "ref_sig8 fixture 应展开 flags 首个元素");
+    expect_contains(output,
+                    "global_value.flags[0].all [StaticLayoutKnown] unsigned int",
+                    "ref_sig8 fixture 应展开 union 内 all 成员的本地 base_type");
+    expect_contains(output,
+                    "global_value.flags[0].bits [StaticLayoutKnown] FlagBits",
+                    "ref_sig8 fixture 应展开 union 内 bits 成员的签名类型");
+    expect_contains(output,
+                    "global_value.flags[0].bits.enabled [StaticLayoutKnown]",
+                    "ref_sig8 fixture 应展开 bits 内 bitfield 成员");
 }
 
 void verify_ref_sig8_indirect_fixture()
@@ -548,6 +559,18 @@ void verify_ref_sig8_indirect_fixture()
         output, "global_value.left [StaticLayoutKnown] int", "indirect debug_types fixture 应保留 left 的 int 类型");
     expect_contains(
         output, "global_value.right [StaticLayoutKnown] int", "indirect debug_types fixture 应保留 right 的 int 类型");
+    expect_contains(output, "global_value.flags [StaticLayoutKnown]", "indirect debug_types fixture 应展开成员数组 flags");
+    expect_contains(
+        output, "global_value.flags[0] [StaticLayoutKnown]", "indirect debug_types fixture 应展开 flags 首个元素");
+    expect_contains(output,
+                    "global_value.flags[0].all [StaticLayoutKnown] unsigned int",
+                    "indirect debug_types fixture 应展开 union 内 all 成员的本地 base_type");
+    expect_contains(output,
+                    "global_value.flags[0].bits [StaticLayoutKnown] FlagBits",
+                    "indirect debug_types fixture 应展开 union 内 bits 成员的签名类型");
+    expect_contains(output,
+                    "global_value.flags[0].bits.enabled [StaticLayoutKnown]",
+                    "indirect debug_types fixture 应展开 bits 内 bitfield 成员");
 }
 
 void verify_gcc_ref_sup4_fixture()

@@ -38,6 +38,48 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(FIXTURE_OUTPUT_DIR "${CMAKE_BINARY_DIR}/fixtures")
 file(MAKE_DIRECTORY "${FIXTURE_OUTPUT_DIR}")
 
+function(elf_static_view_normalize_fixture_path output_var path)
+  if("${path}" MATCHES "^\\$<")
+    set("${output_var}" "" PARENT_SCOPE)
+    return()
+  endif()
+
+  get_filename_component(normalized_path "${path}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_BINARY_DIR}")
+  file(TO_CMAKE_PATH "${normalized_path}" normalized_path)
+  set("${output_var}" "${normalized_path}" PARENT_SCOPE)
+endfunction()
+
+function(elf_static_view_fixture_output_property output_var output_file)
+  elf_static_view_normalize_fixture_path(normalized_output_file "${output_file}")
+  if(NOT normalized_output_file)
+    set("${output_var}" "" PARENT_SCOPE)
+    return()
+  endif()
+
+  string(MD5 output_hash "${normalized_output_file}")
+  set("${output_var}" "ELF_STATIC_VIEW_FIXTURE_OUTPUT_${output_hash}" PARENT_SCOPE)
+endfunction()
+
+function(elf_static_view_register_fixture_output target output_file)
+  elf_static_view_fixture_output_property(fixture_property "${output_file}")
+  if(fixture_property)
+    # 记录输出文件所属的 fixture target，用于派生 fixture 自动补 target 级时序依赖。
+    set_property(GLOBAL PROPERTY "${fixture_property}" "${target}_fixture")
+  endif()
+endfunction()
+
+function(elf_static_view_add_fixture_input_dependencies target)
+  foreach(input_file IN LISTS ARGN)
+    elf_static_view_fixture_output_property(fixture_property "${input_file}")
+    if(fixture_property)
+      get_property(parent_fixture_target GLOBAL PROPERTY "${fixture_property}")
+      if(parent_fixture_target AND NOT parent_fixture_target STREQUAL "${target}_fixture")
+        add_dependencies("${target}_fixture" "${parent_fixture_target}")
+      endif()
+    endif()
+  endforeach()
+endfunction()
+
 function(add_linux_elf_fixture target source_file compiler language_standard)
   get_filename_component(source_name "${source_file}" NAME_WE)
   set(output_file "${FIXTURE_OUTPUT_DIR}/${target}")
@@ -61,6 +103,7 @@ function(add_linux_elf_fixture target source_file compiler language_standard)
     COMMENT "Building ELF fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -91,6 +134,8 @@ function(add_linux_split_dwarf_fixture target source_file compiler language_stan
     COMMENT "Building split DWARF fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}" "${sidecar_output_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
+  elf_static_view_register_fixture_output("${target}" "${sidecar_output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
   set("${target}_SIDECAR_OUTPUT" "${sidecar_output_file}" PARENT_SCOPE)
 endfunction()
@@ -109,6 +154,8 @@ function(add_dwp_fixture target input_file)
     COMMENT "Building DWP fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_add_fixture_input_dependencies("${target}" "${input_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -138,6 +185,7 @@ function(add_linux_elf_fixture_from_sources target compiler language_standard)
     COMMENT "Building ELF fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -166,6 +214,7 @@ function(add_objcopy_elf_fixture target source_file compiler language_standard o
     COMMENT "Building objcopy ELF fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -189,6 +238,8 @@ function(add_patched_elf_fixture target input_file patch_command)
     COMMENT "Building patched ELF fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_add_fixture_input_dependencies("${target}" "${input_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -209,6 +260,8 @@ function(add_dwarfgen_debug_sup_fixture target input_file)
     COMMENT "Building dwarfgen .debug_sup fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_add_fixture_input_dependencies("${target}" "${input_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -244,6 +297,7 @@ function(add_gcc_dwarf5_objcopy_fixture target source_file language_standard)
     COMMENT "Building GCC DWARF5 objcopy fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -274,6 +328,7 @@ function(add_gcc_dwarf64_objcopy_fixture target source_file language_standard)
     COMMENT "Building GCC DWARF64 objcopy fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()
 
@@ -307,5 +362,6 @@ function(add_gcc_dwarf5_objcopy_fixture_from_sources target)
     COMMENT "Building GCC DWARF5 objcopy fixture ${target}"
   )
   add_custom_target("${target}_fixture" DEPENDS "${output_file}")
+  elf_static_view_register_fixture_output("${target}" "${output_file}")
   set("${target}_OUTPUT" "${output_file}" PARENT_SCOPE)
 endfunction()

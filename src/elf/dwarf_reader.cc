@@ -57,6 +57,7 @@ namespace {
 
     struct ManualAbbrevEntry {
         Dwarf_Half tag = 0;
+        bool has_children = false;
         std::vector<std::pair<Dwarf_Half, Dwarf_Half>> attributes;
     };
 
@@ -65,6 +66,8 @@ namespace {
     struct ManualMemberDescriptor {
         std::optional<std::string> name;
         std::optional<std::string> type_signature_hex; // DW_FORM_ref_sig8
+        std::optional<std::uint64_t> type_ref_offset;  // type unit 内部引用，如 DW_FORM_ref4
+        std::uint64_t type_ref_unit_offset = 0;
         std::optional<std::uint64_t> byte_offset;       // DW_AT_data_member_location, 常量形式
         std::optional<std::uint64_t> bit_offset;        // DW_AT_data_bit_offset 或 DW_AT_bit_offset
         std::optional<std::uint64_t> bit_size;          // DW_AT_bit_size
@@ -73,6 +76,8 @@ namespace {
         Dwarf_Half tag = 0;
         std::optional<std::string> name;
         std::optional<std::string> referenced_signature_hex;
+        std::optional<std::uint64_t> referenced_type_ref_offset;
+        std::uint64_t referenced_type_ref_unit_offset = 0;
         std::vector<std::uint64_t> dimensions;
         std::optional<std::uint64_t> byte_size;
         std::vector<ManualMemberDescriptor> members;
@@ -92,6 +97,19 @@ namespace {
         return "type@sig:" + signature_hex;
     }
 
+    [[nodiscard]] std::string make_manual_local_type_key(const std::uint64_t offset)
+    {
+        return "local@" + std::to_string(offset);
+    }
+
+    [[nodiscard]] std::string make_manual_type_id_from_key(const std::string& type_key)
+    {
+        if (type_key.starts_with("local@")) {
+            return "type@" + type_key;
+        }
+        return make_manual_type_id(type_key);
+    }
+
     [[nodiscard]] std::string sig8_to_hex(const Dwarf_Sig8& signature)
     {
         std::ostringstream stream;
@@ -101,6 +119,14 @@ namespace {
         }
         return stream.str();
     }
+
+    [[nodiscard]] bool is_manual_local_reference_form(Dwarf_Half form);
+    [[nodiscard]] std::optional<std::string> read_manual_signature_value(Dwarf_Half form,
+                                                                         const std::vector<std::uint8_t>& data,
+                                                                         std::size_t& offset);
+    void resolve_manual_descriptor_ref_offsets(
+        ManualTypeDescriptor& descriptor,
+        const std::unordered_map<std::uint64_t, std::string>& signature_by_offset);
 
     [[nodiscard]] std::uint16_t read_u16_le(const std::vector<std::uint8_t>& data, const std::size_t offset)
     {
@@ -163,6 +189,7 @@ namespace {
             ManualAbbrevEntry entry;
             entry.tag = static_cast<Dwarf_Half>(read_uleb128(abbrev, offset));
             if (offset < abbrev.size()) {
+                entry.has_children = abbrev[offset] != 0;
                 ++offset;
             }
             while (offset < abbrev.size()) {
@@ -418,7 +445,10 @@ namespace {
     void manual_parse_child_dies(const std::vector<std::uint8_t>& types,
                                  std::size_t& cursor,
                                  const std::size_t unit_end,
+                                 const std::uint64_t unit_offset,
                                  const std::unordered_map<std::uint64_t, ManualAbbrevEntry>& abbrev_entries,
+                                 std::unordered_map<std::uint64_t, std::string>& signature_by_offset,
+                                 std::unordered_map<std::string, ManualTypeDescriptor>& descriptors,
                                  const std::vector<std::uint8_t>& strings,
                                  const std::vector<std::uint8_t>& string_offsets,
                                  const std::vector<std::uint8_t>& line_strings,
@@ -426,6 +456,7 @@ namespace {
                                  ManualTypeDescriptor& descriptor)
     {
         while (cursor < unit_end) {
+            const auto child_die_offset = cursor;
             const auto child_code = read_uleb128(types, cursor);
             if (child_code == 0) {
                 break; // 子 DIE 列表终止符
@@ -501,10 +532,16 @@ namespace {
                         continue;
                     }
                     if (attr == DW_AT_type && eff_form == DW_FORM_ref_sig8) {
-                        Dwarf_Sig8 ref_sig{};
-                        std::memcpy(ref_sig.signature, types.data() + cursor, sizeof(ref_sig.signature));
-                        member.type_signature_hex = sig8_to_hex(ref_sig);
-                        cursor += 8;
+                        member.type_signature_hex = read_manual_signature_value(eff_form, types, cursor);
+                        continue;
+                    }
+                    if (attr == DW_AT_type && is_manual_local_reference_form(eff_form)) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            member.type_ref_offset = val;
+                            member.type_ref_unit_offset = unit_offset;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
                         continue;
                     }
                     if (attr == DW_AT_data_member_location) {
@@ -565,16 +602,73 @@ namespace {
                 if (enum_name.has_value()) {
                     descriptor.enumerators.push_back(enum_name.value());
                 }
+            } else if (child_tag == DW_TAG_array_type) {
+                ManualTypeDescriptor local_type;
+                local_type.tag = child_tag;
+                for (const auto& [attr, form] : child_it->second.attributes) {
+                    auto eff_form = (form == DW_FORM_indirect)
+                                        ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                        : form;
+                    if (attr == DW_AT_type && eff_form == DW_FORM_ref_sig8) {
+                        local_type.referenced_signature_hex = read_manual_signature_value(eff_form, types, cursor);
+                        continue;
+                    }
+                    if (attr == DW_AT_type && is_manual_local_reference_form(eff_form)) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            local_type.referenced_type_ref_offset = val;
+                            local_type.referenced_type_ref_unit_offset = unit_offset;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    if (attr == DW_AT_byte_size) {
+                        if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            local_type.byte_size = val.value();
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                if (child_it->second.has_children) {
+                    manual_parse_child_dies(types, cursor, unit_end, unit_offset, abbrev_entries,
+                                            signature_by_offset, descriptors, strings, string_offsets, line_strings,
+                                            unit_context, local_type);
+                }
+                const auto local_key = make_manual_local_type_key(child_die_offset);
+                signature_by_offset[child_die_offset] = local_key;
+                descriptors[local_key] = std::move(local_type);
             } else if (child_tag == DW_TAG_structure_type ||
                        child_tag == DW_TAG_class_type ||
                        child_tag == DW_TAG_union_type) {
                 // 类内嵌套的匿名 union/struct 类型：递归解析子 DIE 及其成员
                 ManualTypeDescriptor nested;
                 nested.tag = child_tag;
+                bool declaration_only = false;
                 for (const auto& [attr, form] : child_it->second.attributes) {
                     auto eff_form = (form == DW_FORM_indirect)
                                         ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
                                         : form;
+                    if (attr == DW_AT_declaration) {
+                        if (eff_form == DW_FORM_flag_present) {
+                            declaration_only = true;
+                        } else if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                            declaration_only = val.value() != 0;
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
+                    if (attr == DW_AT_signature) {
+                        if (auto signature_hex = read_manual_signature_value(eff_form, types, cursor)) {
+                            signature_by_offset[child_die_offset] = signature_hex.value();
+                        } else {
+                            manual_skip_form(eff_form, types, cursor);
+                        }
+                        continue;
+                    }
                     if (attr == DW_AT_name && eff_form == DW_FORM_strp) {
                         if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
                             nested.name = manual_read_string(
@@ -603,9 +697,14 @@ namespace {
                     }
                     manual_skip_form(eff_form, types, cursor);
                 }
-                manual_parse_child_dies(types, cursor, unit_end, abbrev_entries,
-                                        strings, string_offsets, line_strings,
-                                        unit_context, nested);
+                if (declaration_only) {
+                    continue;
+                }
+                if (child_it->second.has_children) {
+                    manual_parse_child_dies(types, cursor, unit_end, unit_offset, abbrev_entries,
+                                            signature_by_offset, descriptors, strings, string_offsets, line_strings,
+                                            unit_context, nested);
+                }
                 descriptor.nested_types.push_back(std::move(nested));
 
             } else {
@@ -618,6 +717,159 @@ namespace {
                 }
             }
         }
+    }
+
+    [[nodiscard]] bool is_manual_top_level_type_tag(const Dwarf_Half tag)
+    {
+        switch (tag) {
+            case DW_TAG_base_type:
+            case DW_TAG_pointer_type:
+            case DW_TAG_reference_type:
+            case DW_TAG_rvalue_reference_type:
+            case DW_TAG_ptr_to_member_type:
+            case DW_TAG_typedef:
+            case DW_TAG_const_type:
+            case DW_TAG_volatile_type:
+            case DW_TAG_restrict_type:
+            case kDwTagTiFarType:
+            case DW_TAG_array_type:
+            case DW_TAG_structure_type:
+            case DW_TAG_class_type:
+            case DW_TAG_union_type:
+            case DW_TAG_enumeration_type:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    [[nodiscard]] std::optional<std::pair<std::string, ManualTypeDescriptor>> manual_parse_top_level_type_die(
+        const std::vector<std::uint8_t>& types,
+        std::size_t& cursor,
+        const std::size_t unit_end,
+        const std::uint64_t unit_offset,
+        const std::uint64_t die_offset,
+        const ManualAbbrevEntry& abbrev,
+        const std::unordered_map<std::uint64_t, ManualAbbrevEntry>& abbrev_entries,
+        std::unordered_map<std::uint64_t, std::string>& signature_by_offset,
+        std::unordered_map<std::string, ManualTypeDescriptor>& descriptors,
+        const std::vector<std::uint8_t>& strings,
+        const std::vector<std::uint8_t>& string_offsets,
+        const std::vector<std::uint8_t>& line_strings,
+        const ManualTypeUnitContext& unit_context)
+    {
+        if (!is_manual_top_level_type_tag(abbrev.tag)) {
+            for (const auto& form : abbrev.attributes | std::views::values) {
+                const auto eff_form = (form == DW_FORM_indirect)
+                                          ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                          : form;
+                manual_skip_form(eff_form, types, cursor);
+            }
+            return std::nullopt;
+        }
+
+        ManualTypeDescriptor descriptor;
+        descriptor.tag = abbrev.tag;
+        std::optional<std::string> signature_key;
+        bool declaration_only = false;
+        for (const auto& [attr, form] : abbrev.attributes) {
+            auto eff_form = (form == DW_FORM_indirect)
+                                ? static_cast<Dwarf_Half>(read_uleb128(types, cursor))
+                                : form;
+            if (attr == DW_AT_name && eff_form == DW_FORM_strp) {
+                if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                    descriptor.name = manual_read_string(strings, static_cast<std::uint32_t>(val.value()));
+                } else {
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+            }
+            if (attr == DW_AT_name && eff_form == DW_FORM_line_strp) {
+                if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                    descriptor.name = manual_read_string(line_strings, static_cast<std::uint32_t>(val.value()));
+                } else {
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+            }
+            if (attr == DW_AT_name && eff_form == DW_FORM_string) {
+                const auto name_end = std::find(types.begin() + static_cast<std::ptrdiff_t>(cursor),
+                                                types.end(),
+                                                static_cast<std::uint8_t>(0));
+                if (name_end != types.end()) {
+                    descriptor.name = std::string(
+                        reinterpret_cast<const char*>(types.data() + cursor),
+                        static_cast<std::size_t>(name_end - (types.begin() + static_cast<std::ptrdiff_t>(cursor))));
+                    cursor = static_cast<std::size_t>(name_end - types.begin()) + 1;
+                }
+                continue;
+            }
+            if (attr == DW_AT_name &&
+                (eff_form == DW_FORM_strx || eff_form == DW_FORM_strx1 || eff_form == DW_FORM_strx2 ||
+                 eff_form == DW_FORM_strx3 || eff_form == DW_FORM_strx4)) {
+                if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                    descriptor.name = manual_read_strx_string(string_offsets, strings, unit_context, val.value());
+                } else {
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+            }
+            if (attr == DW_AT_type && eff_form == DW_FORM_ref_sig8) {
+                descriptor.referenced_signature_hex = read_manual_signature_value(eff_form, types, cursor);
+                continue;
+            }
+            if (attr == DW_AT_type && is_manual_local_reference_form(eff_form)) {
+                if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                    descriptor.referenced_type_ref_offset = val;
+                    descriptor.referenced_type_ref_unit_offset = unit_offset;
+                } else {
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+            }
+            if (attr == DW_AT_byte_size) {
+                if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                    descriptor.byte_size = val.value();
+                } else {
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+            }
+            if (attr == DW_AT_declaration) {
+                if (eff_form == DW_FORM_flag_present) {
+                    declaration_only = true;
+                } else if (auto val = read_form_unsigned_value(eff_form, types, cursor)) {
+                    declaration_only = val.value() != 0;
+                } else {
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+            }
+            if (attr == DW_AT_signature) {
+                if (auto signature_hex = read_manual_signature_value(eff_form, types, cursor)) {
+                    signature_key = signature_hex.value();
+                    signature_by_offset[die_offset] = signature_hex.value();
+                } else {
+                    manual_skip_form(eff_form, types, cursor);
+                }
+                continue;
+            }
+            manual_skip_form(eff_form, types, cursor);
+        }
+
+        if (abbrev.has_children) {
+            manual_parse_child_dies(types, cursor, unit_end, unit_offset, abbrev_entries,
+                                    signature_by_offset, descriptors, strings, string_offsets, line_strings,
+                                    unit_context, descriptor);
+        }
+
+        if (declaration_only && signature_key.has_value()) {
+            return std::nullopt;
+        }
+
+        const auto type_key = signature_key.value_or(make_manual_local_type_key(die_offset));
+        signature_by_offset[die_offset] = type_key;
+        return std::make_pair(type_key, std::move(descriptor));
     }
 
     [[nodiscard]] std::unordered_map<std::string, ManualTypeDescriptor>& manual_type_descriptors(
@@ -637,6 +889,7 @@ namespace {
             const auto debug_line_str = ElfSymbolTable::read_section_bytes(file_path, ".debug_line_str");
             if (debug_types.has_value() && debug_abbrev.has_value()) {
                 const auto& types = debug_types.value();
+                std::unordered_map<std::uint64_t, std::string> signature_by_offset;
                 auto empty_str = std::vector<std::uint8_t>{};
                 const auto& strings = debug_str.has_value() ? debug_str.value() : empty_str;
                 const auto& string_offsets = debug_str_offsets.has_value() ? debug_str_offsets.value() : empty_str;
@@ -693,6 +946,7 @@ namespace {
                         const auto abbrev_entries = load_manual_abbrev_entries(debug_abbrev.value(), abbrev_offset);
                         const auto signature_hex = sig8_to_hex(signature);
                         const auto die_offset = current_unit_offset + type_offset;
+                        signature_by_offset[die_offset] = signature_hex;
                         if (die_offset >= unit_end) {
                             unit_offset = unit_end;
                             continue;
@@ -755,10 +1009,17 @@ namespace {
                                 continue;
                             }
                             if (attr == DW_AT_type && effective_form == DW_FORM_ref_sig8) {
-                                Dwarf_Sig8 referenced{};
-                                std::memcpy(referenced.signature, types.data() + cursor, sizeof(referenced.signature));
-                                descriptor.referenced_signature_hex = sig8_to_hex(referenced);
-                                cursor += 8;
+                                descriptor.referenced_signature_hex =
+                                    read_manual_signature_value(effective_form, types, cursor);
+                                continue;
+                            }
+                            if (attr == DW_AT_type && is_manual_local_reference_form(effective_form)) {
+                                if (auto value = read_form_unsigned_value(effective_form, types, cursor)) {
+                                    descriptor.referenced_type_ref_offset = value;
+                                    descriptor.referenced_type_ref_unit_offset = current_unit_offset;
+                                } else {
+                                    manual_skip_form(effective_form, types, cursor);
+                                }
                                 continue;
                             }
                             if (attr == DW_AT_byte_size) {
@@ -777,11 +1038,32 @@ namespace {
                             descriptor.tag == DW_TAG_union_type ||
                             descriptor.tag == DW_TAG_enumeration_type ||
                             descriptor.tag == DW_TAG_array_type) {
-                            manual_parse_child_dies(types, cursor, unit_end, abbrev_entries,
-                                                    strings, string_offsets, line_strings,
-                                                    unit_context, descriptor);
+                            if (abbrev->second.has_children) {
+                                manual_parse_child_dies(types, cursor, unit_end, current_unit_offset, abbrev_entries,
+                                                        signature_by_offset, descriptors, strings, string_offsets,
+                                                        line_strings, unit_context, descriptor);
+                            }
                         }
                         descriptors.emplace(signature_hex, std::move(descriptor));
+                        while (cursor < unit_end) {
+                            const auto sibling_die_offset = cursor;
+                            const auto sibling_code = read_uleb128(types, cursor);
+                            if (sibling_code == 0) {
+                                break;
+                            }
+                            const auto sibling_abbrev = abbrev_entries.find(sibling_code);
+                            if (sibling_abbrev == abbrev_entries.end()) {
+                                break;
+                            }
+                            if (auto sibling_descriptor = manual_parse_top_level_type_die(
+                                    types, cursor, unit_end, current_unit_offset, sibling_die_offset,
+                                    sibling_abbrev->second, abbrev_entries, signature_by_offset, descriptors,
+                                    strings, string_offsets, line_strings, unit_context);
+                                sibling_descriptor.has_value()) {
+                                descriptors.insert_or_assign(sibling_descriptor->first,
+                                                             std::move(sibling_descriptor->second));
+                            }
+                        }
                     } catch (...) {
                         // TI 的 type unit 里会混入我们暂时不关心的 vendor / block / exprloc
                         // 形式。 这里按 unit 粒度跳过，避免单个 unit
@@ -790,6 +1072,9 @@ namespace {
                         continue;
                     }
                     unit_offset = unit_end;
+                }
+                for (auto& descriptor : descriptors | std::views::values) {
+                    resolve_manual_descriptor_ref_offsets(descriptor, signature_by_offset);
                 }
             }
         } catch (...) {
@@ -1503,10 +1788,111 @@ namespace {
         return resolve_type_id(context, target);
     }
 
-    [[nodiscard]] std::optional<std::string> resolve_signature_type_id(ReaderContext& context,
-                                                                       const Dwarf_Sig8& signature)
+    [[nodiscard]] std::optional<std::string> materialize_manual_signature_type_id(
+        ReaderContext& context, const std::string& signature_hex);
+
+    void materialize_manual_descriptor_references(ReaderContext& context, const ManualTypeDescriptor& descriptor)
     {
-        const auto signature_hex = sig8_to_hex(signature);
+        // 手工 .debug_types 兜底必须把引用链完整落入 context.types。
+        // 否则 Expander 只能看到 type@sig:* 字符串，无法继续展开数组、union 或 bitfield 成员。
+        if (descriptor.referenced_signature_hex.has_value()) {
+            (void) materialize_manual_signature_type_id(context, descriptor.referenced_signature_hex.value());
+        }
+        for (const auto& member : descriptor.members) {
+            if (member.type_signature_hex.has_value()) {
+                (void) materialize_manual_signature_type_id(context, member.type_signature_hex.value());
+            }
+        }
+        for (const auto& nested : descriptor.nested_types) {
+            materialize_manual_descriptor_references(context, nested);
+        }
+    }
+
+    [[nodiscard]] bool is_manual_local_reference_form(const Dwarf_Half form)
+    {
+        return form == DW_FORM_ref1 || form == DW_FORM_ref2 || form == DW_FORM_ref4 || form == DW_FORM_ref8 ||
+               form == DW_FORM_ref_udata || form == DW_FORM_ref_addr;
+    }
+
+    [[nodiscard]] std::optional<std::string> read_manual_signature_value(const Dwarf_Half form,
+                                                                         const std::vector<std::uint8_t>& data,
+                                                                         std::size_t& offset)
+    {
+        Dwarf_Sig8 signature{};
+        if (form != DW_FORM_ref_sig8 || offset + sizeof(signature.signature) > data.size()) {
+            return std::nullopt;
+        }
+
+        std::memcpy(signature.signature, data.data() + offset, sizeof(signature.signature));
+        offset += sizeof(signature.signature);
+        return sig8_to_hex(signature);
+    }
+
+    [[nodiscard]] std::optional<std::string> resolve_manual_ref_offset(
+        const std::unordered_map<std::uint64_t, std::string>& signature_by_offset,
+        const std::uint64_t offset,
+        const std::uint64_t unit_offset)
+    {
+        if (const auto found = signature_by_offset.find(unit_offset + offset); found != signature_by_offset.end()) {
+            return found->second;
+        }
+        if (const auto found = signature_by_offset.find(offset); found != signature_by_offset.end()) {
+            return found->second;
+        }
+        return std::nullopt;
+    }
+
+    void resolve_manual_descriptor_ref_offsets(
+        ManualTypeDescriptor& descriptor,
+        const std::unordered_map<std::uint64_t, std::string>& signature_by_offset)
+    {
+        if (!descriptor.referenced_signature_hex.has_value() && descriptor.referenced_type_ref_offset.has_value()) {
+            descriptor.referenced_signature_hex =
+                resolve_manual_ref_offset(signature_by_offset,
+                                          descriptor.referenced_type_ref_offset.value(),
+                                          descriptor.referenced_type_ref_unit_offset);
+        }
+
+        for (auto& member : descriptor.members) {
+            if (!member.type_signature_hex.has_value() && member.type_ref_offset.has_value()) {
+                member.type_signature_hex =
+                    resolve_manual_ref_offset(signature_by_offset,
+                                              member.type_ref_offset.value(),
+                                              member.type_ref_unit_offset);
+            }
+        }
+
+        for (auto& nested : descriptor.nested_types) {
+            resolve_manual_descriptor_ref_offsets(nested, signature_by_offset);
+        }
+    }
+
+    [[nodiscard]] TypeMember make_manual_type_member(const ManualMemberDescriptor& descriptor)
+    {
+        TypeMember member;
+        member.name = descriptor.name.value_or("<anon>");
+        member.availability = Availability::StaticLayoutKnown;
+        if (descriptor.type_signature_hex.has_value()) {
+            member.type = TypeRef{make_manual_type_id_from_key(descriptor.type_signature_hex.value())};
+        }
+        if (descriptor.byte_offset.has_value()) {
+            member.address.kind = AddressKind::MemberOffset;
+            member.address.relative_offset = static_cast<std::int64_t>(descriptor.byte_offset.value());
+        }
+        if (descriptor.bit_offset.has_value()) {
+            member.address.kind = AddressKind::BitField;
+            member.address.bit_offset = descriptor.bit_offset.value();
+        }
+        if (descriptor.bit_size.has_value()) {
+            member.address.kind = AddressKind::BitField;
+            member.address.bit_size = descriptor.bit_size.value();
+        }
+        return member;
+    }
+
+    [[nodiscard]] std::optional<std::string> materialize_manual_signature_type_id(
+        ReaderContext& context, const std::string& signature_hex)
+    {
         if (const auto found = context.signature_type_ids.find(signature_hex);
             found != context.signature_type_ids.end()) {
             return found->second;
@@ -1517,12 +1903,19 @@ namespace {
                       << " present=" << (manual.contains(signature_hex) ? "1" : "0") << '\n';
         }
         if (const auto iter = manual.find(signature_hex); iter != manual.end()) {
-            auto type_id = make_manual_type_id(signature_hex);
+            auto type_id = make_manual_type_id_from_key(signature_hex);
             if (should_trace_unknown_type_name(signature_hex)) {
                 std::cerr << "[trace-manual] use " << type_id << " tag=" << static_cast<unsigned int>(iter->second.tag)
                           << '\n';
             }
+            context.signature_type_ids[signature_hex] = type_id;
+            if (context.loading_type_ids.contains(type_id)) {
+                return type_id;
+            }
             if (!context.recorded_type_ids.contains(type_id)) {
+                context.loading_type_ids.insert(type_id);
+                materialize_manual_descriptor_references(context, iter->second);
+
                 TypeNode type;
                 type.id = type_id;
                 type.kind = map_type_kind(iter->second.tag);
@@ -1531,7 +1924,8 @@ namespace {
                     type.byte_size = iter->second.byte_size;
                 }
                 if (iter->second.referenced_signature_hex.has_value()) {
-                    const auto referenced_id = make_manual_type_id(iter->second.referenced_signature_hex.value());
+                    const auto referenced_id =
+                        make_manual_type_id_from_key(iter->second.referenced_signature_hex.value());
                     if (type.kind == TypeKind::Pointer || type.kind == TypeKind::Reference) {
                         type.pointee_type = TypeRef{referenced_id};
                     } else if (type.kind == TypeKind::Array) {
@@ -1545,25 +1939,7 @@ namespace {
                 }
                 // 填入手工解析的成员
                 for (const auto& m : iter->second.members) {
-                    TypeMember member;
-                    member.name = m.name.value_or("<anon>");
-                    member.availability = Availability::StaticLayoutKnown;
-                    if (m.type_signature_hex.has_value()) {
-                        member.type = TypeRef{make_manual_type_id(m.type_signature_hex.value())};
-                    }
-                    if (m.byte_offset.has_value()) {
-                        member.address.kind = AddressKind::MemberOffset;
-                        member.address.relative_offset = static_cast<std::int64_t>(m.byte_offset.value());
-                    }
-                    if (m.bit_offset.has_value()) {
-                        member.address.kind = AddressKind::BitField;
-                        member.address.bit_offset = m.bit_offset.value();
-                    }
-                    if (m.bit_size.has_value()) {
-                        member.address.kind = AddressKind::BitField;
-                        member.address.bit_size = m.bit_size.value();
-                    }
-                    type.members.push_back(std::move(member));
+                    type.members.push_back(make_manual_type_member(m));
                 }
                 // 填入手工解析的枚举值
                 for (const auto& ev : iter->second.enumerators) {
@@ -1586,25 +1962,7 @@ namespace {
                         nested_type.byte_size = nested_desc.byte_size;
                     }
                     for (const auto& nm : nested_desc.members) {
-                        TypeMember member;
-                        member.name = nm.name.value_or("<anon>");
-                        member.availability = Availability::StaticLayoutKnown;
-                        if (nm.type_signature_hex.has_value()) {
-                            member.type = TypeRef{make_manual_type_id(nm.type_signature_hex.value())};
-                        }
-                        if (nm.byte_offset.has_value()) {
-                            member.address.kind = AddressKind::MemberOffset;
-                            member.address.relative_offset = static_cast<std::int64_t>(nm.byte_offset.value());
-                        }
-                        if (nm.bit_offset.has_value()) {
-                            member.address.kind = AddressKind::BitField;
-                            member.address.bit_offset = nm.bit_offset.value();
-                        }
-                        if (nm.bit_size.has_value()) {
-                            member.address.kind = AddressKind::BitField;
-                            member.address.bit_size = nm.bit_size.value();
-                        }
-                        nested_type.members.push_back(std::move(member));
+                        nested_type.members.push_back(make_manual_type_member(nm));
                     }
                     for (const auto& nev : nested_desc.enumerators) {
                         nested_type.enum_values.push_back(nev);
@@ -1617,10 +1975,17 @@ namespace {
                 context.type_ids[type_id] = type.id;
                 context.recorded_type_ids.insert(type_id);
                 context.types.push_back(std::move(type));
+                context.loading_type_ids.erase(type_id);
             }
             return type_id;
         }
         return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<std::string> resolve_signature_type_id(ReaderContext& context,
+                                                                       const Dwarf_Sig8& signature)
+    {
+        return materialize_manual_signature_type_id(context, sig8_to_hex(signature));
     }
 
     [[nodiscard]] std::optional<std::string> referenced_type_id(ReaderContext& context, Dwarf_Attribute attr)

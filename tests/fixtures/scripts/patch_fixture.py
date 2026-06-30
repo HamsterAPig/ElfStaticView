@@ -472,34 +472,51 @@ def patch_gcc_strp_to_strp_sup(args: argparse.Namespace) -> None:
 
 def patch_ref_sig8_debug_types(args: argparse.Namespace) -> None:
     with tempfile.TemporaryDirectory(prefix="elf-static-view-refsig8-") as temp:
-        sections = dump_sections(args.objcopy_path, args.input_path, Path(temp), [".debug_abbrev", ".debug_info"])
+        sections = dump_sections(
+            args.objcopy_path, args.input_path, Path(temp), [".debug_abbrev", ".debug_info", ".debug_str"]
+        )
         abbrev = read_bytes(sections[".debug_abbrev"])
-        old_abbrev = bytes([0x06, 0x34, 0x00, 0x03, 0x0E, 0x49, 0x13, 0x3A, 0x0B, 0x3B, 0x0B, 0x02, 0x18, 0x6E, 0x0E, 0x00, 0x00])
-        new_abbrev = bytes([0x06, 0x34, 0x00, 0x03, 0x0E, 0x49, 0x20, 0x3A, 0x0B, 0x3B, 0x0B, 0x02, 0x18, 0x00, 0x00])
-        match = find_pattern(abbrev, old_abbrev)
-        if match < 0:
+        old_abbrev_tail = bytes([0x34, 0x00, 0x03, 0x0E, 0x49, 0x13, 0x3A, 0x0B, 0x3B, 0x0B, 0x02, 0x18, 0x6E, 0x0E, 0x00, 0x00])
+        tail_match = find_pattern(abbrev, old_abbrev_tail)
+        if tail_match <= 0:
             raise PatchError("未找到待替换的 variable abbrev")
+        variable_abbrev_code = abbrev[tail_match - 1]
+        old_abbrev = bytes([variable_abbrev_code]) + old_abbrev_tail
+        new_abbrev = bytes([variable_abbrev_code, 0x34, 0x00, 0x03, 0x0E, 0x49, 0x20, 0x3A, 0x0B, 0x3B, 0x0B, 0x02, 0x18, 0x00, 0x00])
+        match = tail_match - 1
         patched_abbrev = bytearray(abbrev[:match]) + bytearray(new_abbrev) + abbrev[match + len(old_abbrev) :]
         info = read_bytes(sections[".debug_info"])
+        debug_str = read_bytes(sections[".debug_str"])
         global_index = -1
         signature_index = -1
+
+        def read_debug_str(offset: int) -> str:
+            end = debug_str.find(0, offset)
+            if offset < 0 or offset >= len(debug_str) or end < 0:
+                return ""
+            return bytes(debug_str[offset:end]).decode("utf-8", errors="replace")
+
         for index in range(0, len(info) - 24):
-            if info[index] != 0x06:
+            if info[index] != variable_abbrev_code:
+                continue
+            if read_debug_str(read_u32(info, index + 1)) != "global_value":
+                continue
+            type_ref = read_u32(info, index + 5)
+            if type_ref + 9 > len(info):
                 continue
             exprloc_length = info[index + 11]
             next_die_index = index + 12 + exprloc_length + 4
             if next_die_index + 8 >= len(info):
                 continue
-            if info[next_die_index] == 0x07:
-                global_index = index
-                signature_index = next_die_index + 1
-                break
+            global_index = index
+            signature_index = type_ref + 1
+            break
         if global_index < 0 or signature_index < 0:
             raise PatchError("未找到 global_value DIE 模式")
         signature = bytes(info[signature_index : signature_index + 8])
         exprloc_length = info[global_index + 11]
         patched_die = bytearray(12 + exprloc_length + 4)
-        patched_die[0] = 0x06
+        patched_die[0] = variable_abbrev_code
         patched_die[1:5] = info[global_index + 1 : global_index + 5]
         patched_die[5:13] = signature
         patched_die[13] = info[global_index + 9]
@@ -520,22 +537,55 @@ def patch_debug_types_name_indirect(args: argparse.Namespace) -> None:
         match = find_pattern(abbrev, pattern)
         if match < 0:
             raise PatchError("未找到 structure_type abbrev 模式")
+        structure_abbrev_code = pattern[0]
         abbrev[match + 6] = 0x16
         types = read_bytes(sections[".debug_types"])
-        unit_length = read_u32(types, 0)
-        type_offset = read_u32(types, 19)
-        die_offset = int(type_offset)
-        if die_offset + 7 >= len(types):
-            raise PatchError("type unit DIE 偏移越界")
-        patched_types = bytearray(types[: die_offset + 2]) + bytearray([0x0E]) + types[die_offset + 2 :]
-        write_u32(patched_types, 0, unit_length + 1)
+        patched_types = bytearray(types)
+        patched_units = 0
         patched_count = 0
-        for index in range(die_offset, len(patched_types) - 8):
-            if patched_types[index] != 0x03:
+        unit_offset = 0
+        while unit_offset + 23 <= len(patched_types):
+            unit_length = read_u32(patched_types, unit_offset)
+            if unit_length == 0:
+                break
+            unit_end = unit_offset + 4 + unit_length
+            if unit_end > len(patched_types):
+                raise PatchError(".debug_types unit length 越界")
+            type_offset = read_u32(patched_types, unit_offset + 19)
+            die_offset = unit_offset + type_offset
+            if die_offset + 7 >= unit_end:
+                raise PatchError("type unit DIE 偏移越界")
+            if patched_types[die_offset] != structure_abbrev_code:
+                unit_offset = unit_end
                 continue
-            if read_u32(patched_types, index + 5) == 0x40:
-                write_u32(patched_types, index + 5, 0x41)
-                patched_count += 1
+
+            patched_types = (
+                patched_types[: die_offset + 2] + bytearray([0x0E]) + patched_types[die_offset + 2 :]
+            )
+            unit_length += 1
+            write_u32(patched_types, unit_offset, unit_length)
+            patched_units += 1
+
+            inserted_reference_offset = type_offset + 2
+            patched_unit_end = unit_offset + 4 + unit_length
+            for index in range(die_offset, patched_unit_end - 8):
+                if patched_types[index] not in (0x03, 0x0B):
+                    continue
+                target_offset = read_u32(patched_types, index + 5)
+                if inserted_reference_offset < target_offset < 4 + unit_length:
+                    write_u32(patched_types, index + 5, target_offset + 1)
+                    patched_count += 1
+            for index in range(die_offset, patched_unit_end - 4):
+                if patched_types[index] not in (0x05, 0x06):
+                    continue
+                target_offset = read_u32(patched_types, index + 1)
+                if inserted_reference_offset < target_offset < 4 + unit_length:
+                    write_u32(patched_types, index + 1, target_offset + 1)
+                    patched_count += 1
+
+            unit_offset = patched_unit_end
+        if patched_units < 1:
+            raise PatchError("未找到需要改写为 DW_FORM_indirect name 的 type unit")
         if patched_count < 2:
             raise PatchError("未找到足够的 member ref4 目标用于修正偏移")
         write_bytes(sections[".debug_abbrev"], abbrev)
