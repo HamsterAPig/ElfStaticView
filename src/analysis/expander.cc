@@ -3,6 +3,7 @@
 #include "analysis/model_utils.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <unordered_map>
 
 namespace elf_static_view::analysis {
@@ -29,6 +30,40 @@ namespace {
             return std::nullopt;
         }
         return remaining_depth.value() - 1;
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> checked_add_offset(const std::uint64_t base, const std::int64_t offset)
+    {
+        if (offset >= 0) {
+            const auto positive = static_cast<std::uint64_t>(offset);
+            if (positive > std::numeric_limits<std::uint64_t>::max() - base) {
+                return std::nullopt;
+            }
+            return base + positive;
+        }
+
+        const auto magnitude = static_cast<std::uint64_t>(-(offset + 1)) + 1U;
+        if (magnitude > base) {
+            return std::nullopt;
+        }
+        return base - magnitude;
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> checked_add_unsigned(const std::uint64_t base,
+                                                                    const std::uint64_t offset)
+    {
+        if (offset > std::numeric_limits<std::uint64_t>::max() - base) {
+            return std::nullopt;
+        }
+        return base + offset;
+    }
+
+    [[nodiscard]] std::optional<std::uint64_t> checked_multiply(const std::uint64_t left, const std::uint64_t right)
+    {
+        if (left != 0 && right > std::numeric_limits<std::uint64_t>::max() / left) {
+            return std::nullopt;
+        }
+        return left * right;
     }
 
 } // namespace
@@ -151,15 +186,22 @@ ExpandedNode Expander::expand_type(const std::string& path,
             const auto stride = node.array_stride.value_or(0);
             for (std::uint64_t index = 0; index < total_count; ++index) {
                 std::optional<std::uint64_t> child_address;
-                if (absolute_address.has_value()) {
-                    child_address = absolute_address.value() + stride * index;
+                const auto element_offset = checked_multiply(stride, index);
+                if (absolute_address.has_value() && element_offset.has_value()) {
+                    child_address = checked_add_unsigned(absolute_address.value(), element_offset.value());
                 }
+                const auto relative_element_offset =
+                    element_offset.has_value() &&
+                            element_offset.value() <=
+                                static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max())
+                        ? std::optional<std::int64_t>{static_cast<std::int64_t>(element_offset.value())}
+                        : std::nullopt;
                 node.children.push_back(expand_type(path + "[" + std::to_string(index) + "]",
                                                     display_name + "[" + std::to_string(index) + "]",
                                                     element_type,
                                                     availability,
                                                     child_address,
-                                                    static_cast<std::int64_t>(stride * index),
+                                                    relative_element_offset,
                                                     depth + 1,
                                                     child_remaining_depth));
             }
@@ -174,7 +216,7 @@ ExpandedNode Expander::expand_type(const std::string& path,
             const auto* base_type = find_type(base.type.id);
             std::optional<std::uint64_t> child_address;
             if (absolute_address.has_value()) {
-                child_address = absolute_address.value() + base.offset;
+                child_address = checked_add_unsigned(absolute_address.value(), base.offset);
             }
             node.children.push_back(expand_type(path + "::<base>",
                                                 "<base>",
@@ -189,8 +231,7 @@ ExpandedNode Expander::expand_type(const std::string& path,
             const auto* member_type = find_type(member.type.id);
             std::optional<std::uint64_t> child_address;
             if (absolute_address.has_value() && member.address.relative_offset.has_value()) {
-                child_address =
-                    absolute_address.value() + static_cast<std::uint64_t>(member.address.relative_offset.value());
+                child_address = checked_add_offset(absolute_address.value(), member.address.relative_offset.value());
             }
             node.children.push_back(expand_type(path + "." + member.name,
                                                 member.name,
@@ -255,7 +296,11 @@ std::uint64_t Expander::compute_array_count(const TypeNode& type) const
     }
     std::uint64_t count = 1;
     for (const auto dimension : type.array_dimensions) {
-        count *= dimension;
+        const auto next = checked_multiply(count, dimension);
+        if (!next.has_value()) {
+            return 0;
+        }
+        count = next.value();
     }
     return count;
 }

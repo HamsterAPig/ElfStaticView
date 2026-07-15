@@ -1,5 +1,6 @@
 #include "elf/dwarf_wrappers.hpp"
 
+#include "elf/dwarf_expression.hpp"
 #include "elf/elf_symbol_table.hpp"
 #include "elf/ti_coff_object.hpp"
 
@@ -8,6 +9,8 @@
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
+#include <limits>
+#include <mutex>
 #include <optional>
 #include <sstream>
 #include <type_traits>
@@ -316,64 +319,135 @@ namespace {
 
     using Sig8Map = std::unordered_map<std::string, Dwarf_Off>;
 
-    [[nodiscard]] std::uint32_t read_u32_le(const std::vector<std::uint8_t>& data, const std::size_t offset)
+    struct FileFingerprint {
+        std::uintmax_t size = 0;
+        std::filesystem::file_time_type modified_at{};
+
+        bool operator==(const FileFingerprint&) const = default;
+    };
+
+    struct Sig8CacheEntry {
+        FileFingerprint fingerprint;
+        std::shared_ptr<const Sig8Map> map;
+    };
+
+    [[nodiscard]] std::uint64_t read_debug_types_unsigned(const std::vector<std::uint8_t>& data,
+                                                          const std::size_t offset,
+                                                          const std::size_t width,
+                                                          const DwarfByteOrder byte_order)
     {
-        if (offset + 4 > data.size()) {
-            throw DwarfError("读取 .debug_types 失败: 越界读取 u32");
+        if (width == 0 || width > sizeof(std::uint64_t) || offset > data.size() || width > data.size() - offset) {
+            throw DwarfError("读取 .debug_types 失败: 越界读取固定宽度值");
         }
-        return static_cast<std::uint32_t>(data[offset]) | (static_cast<std::uint32_t>(data[offset + 1]) << 8U) |
-               (static_cast<std::uint32_t>(data[offset + 2]) << 16U) |
-               (static_cast<std::uint32_t>(data[offset + 3]) << 24U);
+        std::uint64_t value = 0;
+        for (std::size_t index = 0; index < width; ++index) {
+            const auto source_index = byte_order == DwarfByteOrder::LittleEndian ? index : width - index - 1;
+            value |= static_cast<std::uint64_t>(data[offset + source_index]) << (index * 8U);
+        }
+        return value;
     }
 
-    [[nodiscard]] std::uint16_t read_u16_le(const std::vector<std::uint8_t>& data, const std::size_t offset)
+    [[nodiscard]] std::shared_ptr<const Sig8Map> build_debug_types_sig8_map(const std::string& file_path)
     {
-        if (offset + 2 > data.size()) {
-            throw DwarfError("读取 .debug_types 失败: 越界读取 u16");
-        }
-        return static_cast<std::uint16_t>(data[offset]) | (static_cast<std::uint16_t>(data[offset + 1]) << 8U);
-    }
-
-    [[nodiscard]] Sig8Map& debug_types_sig8_map(const std::string& file_path)
-    {
-        static std::unordered_map<std::string, Sig8Map> cache;
-        const auto found = cache.find(file_path);
-        if (found != cache.end()) {
-            return found->second;
-        }
-
-        Sig8Map map;
+        auto map = std::make_shared<Sig8Map>();
         const auto section = ElfSymbolTable::read_section_bytes(file_path, ".debug_types");
         if (section.has_value()) {
             const auto& data = section.value();
+            const auto metadata = ElfSymbolTable::inspect_file(file_path);
+            const auto byte_order =
+                metadata.byte_order == "BigEndian" ? DwarfByteOrder::BigEndian : DwarfByteOrder::LittleEndian;
             std::size_t offset = 0;
-            while (offset + 23 <= data.size()) {
-                const auto unit_length = read_u32_le(data, offset);
-                if (unit_length == 0) {
+            while (offset + 4 <= data.size()) {
+                const auto initial_length = read_debug_types_unsigned(data, offset, 4, byte_order);
+                if (initial_length == 0) {
                     offset += 4;
                     continue;
                 }
-                const std::size_t unit_end = offset + 4 + unit_length;
-                if (unit_end > data.size()) {
+                std::size_t length_field_size = 4;
+                std::uint64_t unit_length = initial_length;
+                if (initial_length == 0xffffffffU) {
+                    if (offset + 12 > data.size()) {
+                        break;
+                    }
+                    length_field_size = 12;
+                    unit_length = read_debug_types_unsigned(data, offset + 4, 8, byte_order);
+                } else if (initial_length >= 0xfffffff0U) {
+                    offset += 4;
+                    continue;
+                }
+                if (unit_length > std::numeric_limits<std::size_t>::max() - offset - length_field_size) {
                     break;
                 }
-                const auto version = read_u16_le(data, offset + 4);
-                if (version == 4) {
+                const std::size_t unit_end = offset + length_field_size + static_cast<std::size_t>(unit_length);
+                if (unit_end > data.size() || unit_end <= offset + length_field_size + 2) {
+                    break;
+                }
+                const auto offset_size = length_field_size == 12 ? 8U : 4U;
+                const auto version = read_debug_types_unsigned(data, offset + length_field_size, 2, byte_order);
+                std::size_t cursor = offset + length_field_size + 2;
+                if (version == 4 && offset_size + 1U + sizeof(Dwarf_Sig8) + offset_size <= unit_end - cursor) {
+                    cursor += offset_size + 1U;
                     Dwarf_Sig8 signature{};
-                    // DWARF4 type unit 头布局：
-                    // unit_length(4) + version(2) + abbrev_offset(4) + address_size(1)
-                    // + type_signature(8) + type_offset(4)
-                    std::memcpy(signature.signature, data.data() + offset + 11, sizeof(signature.signature));
-                    const auto type_offset = read_u32_le(data, offset + 19);
-                    if (type_offset < unit_length + 4) {
-                        map[sig8_to_hex(signature)] = static_cast<Dwarf_Off>(offset + type_offset);
+                    std::memcpy(signature.signature, data.data() + cursor, sizeof(signature.signature));
+                    cursor += sizeof(signature.signature);
+                    const auto type_offset = read_debug_types_unsigned(data, cursor, offset_size, byte_order);
+                    if (type_offset < unit_end - offset) {
+                        (*map)[sig8_to_hex(signature)] = static_cast<Dwarf_Off>(offset + type_offset);
+                    }
+                } else if (version == 5 && 2U + offset_size + sizeof(Dwarf_Sig8) + offset_size <= unit_end - cursor) {
+                    const auto unit_type = data[cursor++];
+                    ++cursor; // address_size
+                    cursor += offset_size;
+                    if (unit_type == DW_UT_type || unit_type == DW_UT_split_type) {
+                        Dwarf_Sig8 signature{};
+                        std::memcpy(signature.signature, data.data() + cursor, sizeof(signature.signature));
+                        cursor += sizeof(signature.signature);
+                        const auto type_offset = read_debug_types_unsigned(data, cursor, offset_size, byte_order);
+                        if (type_offset < unit_end - offset) {
+                            (*map)[sig8_to_hex(signature)] = static_cast<Dwarf_Off>(offset + type_offset);
+                        }
                     }
                 }
                 offset = unit_end;
             }
         }
+        return map;
+    }
 
-        return cache.emplace(file_path, std::move(map)).first->second;
+    [[nodiscard]] std::shared_ptr<const Sig8Map> debug_types_sig8_map(const std::string& file_path)
+    {
+        static std::mutex cache_mutex;
+        static std::unordered_map<std::string, Sig8CacheEntry> cache;
+
+        std::error_code error;
+        const FileFingerprint fingerprint{
+            .size = std::filesystem::file_size(file_path, error),
+            .modified_at =
+                error ? std::filesystem::file_time_type{} : std::filesystem::last_write_time(file_path, error),
+        };
+        if (error) {
+            return std::make_shared<const Sig8Map>();
+        }
+
+        {
+            const std::scoped_lock lock(cache_mutex);
+            if (const auto found = cache.find(file_path);
+                found != cache.end() && found->second.fingerprint == fingerprint) {
+                return found->second.map;
+            }
+        }
+
+        std::shared_ptr<const Sig8Map> rebuilt;
+        try {
+            rebuilt = build_debug_types_sig8_map(file_path);
+        } catch (...) {
+            rebuilt = std::make_shared<const Sig8Map>();
+        }
+        {
+            const std::scoped_lock lock(cache_mutex);
+            cache.insert_or_assign(file_path, Sig8CacheEntry{.fingerprint = fingerprint, .map = rebuilt});
+        }
+        return rebuilt;
     }
 
 } // namespace
@@ -942,9 +1016,9 @@ std::optional<ReferenceTarget> type_reference_target(Dwarf_Debug debug,
                        std::string("dwarf_global_formref_b failed: ") +
                            (error != nullptr ? dwarf_errmsg(error) : "<no-error>"));
             if (debug_file_path != nullptr) {
-                const auto& map = debug_types_sig8_map(*debug_file_path);
-                const auto iter = map.find(sig8_to_hex(signature));
-                if (iter != map.end()) {
+                const auto map = debug_types_sig8_map(*debug_file_path);
+                const auto iter = map->find(sig8_to_hex(signature));
+                if (iter != map->end()) {
                     trace_sig8(signature, "manual .debug_types index ok: offset=" + std::to_string(iter->second));
                 }
             }
@@ -1675,9 +1749,9 @@ std::optional<LocationDescription> read_location_expression(Dwarf_Debug debug,
                                                             Dwarf_Unsigned expression_length,
                                                             Dwarf_Half address_size,
                                                             Dwarf_Half offset_size,
-                                                            Dwarf_Half dwarf_version)
+                                                            Dwarf_Half dwarf_version,
+                                                            DwarfByteOrder byte_order)
 {
-    (void) offset_size;
     (void) dwarf_version;
     if (debug == nullptr || expression_data == nullptr) {
         return std::nullopt;
@@ -1686,23 +1760,34 @@ std::optional<LocationDescription> read_location_expression(Dwarf_Debug debug,
     // libdwarf 当前版本 (2.3.1-33) 的 dwarf_loclist_from_expr_c 仅有声明而无实现，
     // 因此改用手工解析 DWARF 表达式字节序列。
     const auto* bytes = static_cast<const std::uint8_t*>(expression_data);
-    auto ops = decode_expression_ops(bytes, static_cast<std::size_t>(expression_length), address_size);
+    auto decoded = decode_dwarf_expression(
+        bytes, static_cast<std::size_t>(expression_length), address_size, offset_size, byte_order);
+    if (!decoded.complete) {
+        return std::nullopt;
+    }
+    for (auto& operation : decoded.operations) {
+        assign_location_op_name(operation);
+    }
     LocationDescription description;
     description.kind = DW_LKIND_expression;
     description.entry_count = 1;
 
     LocationDescription::Entry entry;
-    entry.operations = ops;
+    entry.operations = decoded.operations;
     entry.raw_low_pc = 0;
     entry.raw_high_pc = 0;
     description.entries.push_back(std::move(entry));
-    description.operations = std::move(ops);
+    description.operations = std::move(decoded.operations);
 
     return description;
 }
 
-std::optional<LocationDescription> read_location_description(
-    Dwarf_Debug debug, Dwarf_Attribute attr, Dwarf_Half address_size, Dwarf_Half offset_size, Dwarf_Half dwarf_version)
+std::optional<LocationDescription> read_location_description(Dwarf_Debug debug,
+                                                             Dwarf_Attribute attr,
+                                                             Dwarf_Half address_size,
+                                                             Dwarf_Half offset_size,
+                                                             Dwarf_Half dwarf_version,
+                                                             DwarfByteOrder byte_order)
 {
     Dwarf_Half form = 0;
     Dwarf_Error form_error = nullptr;
@@ -1726,7 +1811,7 @@ std::optional<LocationDescription> read_location_description(
                 return std::nullopt;
             }
             return read_location_expression(
-                debug, expression_data, expression_length, address_size, offset_size, dwarf_version);
+                debug, expression_data, expression_length, address_size, offset_size, dwarf_version, byte_order);
         }
 
         Dwarf_Block* block = nullptr;
@@ -1735,7 +1820,8 @@ std::optional<LocationDescription> read_location_description(
         if (block_result != DW_DLV_OK || block == nullptr) {
             return std::nullopt;
         }
-        return read_location_expression(debug, block->bl_data, block->bl_len, address_size, offset_size, dwarf_version);
+        return read_location_expression(
+            debug, block->bl_data, block->bl_len, address_size, offset_size, dwarf_version, byte_order);
     }
 
     Dwarf_Loc_Head_c head = nullptr;

@@ -1,5 +1,7 @@
 #include "analysis/address_bias.hpp"
+#include "analysis/expander.hpp"
 
+#include "elf/dwarf_expression.hpp"
 #include "elf/dwarf_wrappers.hpp"
 #include "elf/elf_symbol_table.hpp"
 #include "elf/ti_coff_object.hpp"
@@ -16,6 +18,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -541,6 +544,18 @@ void verify_ref_sig8_debug_types_fixture()
     expect_contains(output,
                     "global_value.flags[0].bits.enabled [StaticLayoutKnown]",
                     "ref_sig8 fixture 应展开 bits 内 bitfield 成员");
+
+    const auto* global = find_expanded_path(model.expanded, "global_value");
+    const auto* left = find_expanded_path(model.expanded, "global_value.left");
+    const auto* right = find_expanded_path(model.expanded, "global_value.right");
+    const auto* flags = find_expanded_path(model.expanded, "global_value.flags");
+    expect_true(global != nullptr && global->absolute_address.has_value(), "ref_sig8 fixture 应保留对象基址");
+    expect_true(left != nullptr && left->absolute_address == global->absolute_address,
+                "手工 .debug_types 首成员偏移 0 应使用对象基址");
+    expect_true(right != nullptr && right->absolute_address == global->absolute_address.value() + 4U,
+                "手工 .debug_types 常量成员偏移应参与地址计算");
+    expect_true(flags != nullptr && flags->absolute_address == global->absolute_address.value() + 8U,
+                "手工 .debug_types 后续成员偏移应保持准确");
 }
 
 void verify_ref_sig8_indirect_fixture()
@@ -559,7 +574,8 @@ void verify_ref_sig8_indirect_fixture()
         output, "global_value.left [StaticLayoutKnown] int", "indirect debug_types fixture 应保留 left 的 int 类型");
     expect_contains(
         output, "global_value.right [StaticLayoutKnown] int", "indirect debug_types fixture 应保留 right 的 int 类型");
-    expect_contains(output, "global_value.flags [StaticLayoutKnown]", "indirect debug_types fixture 应展开成员数组 flags");
+    expect_contains(
+        output, "global_value.flags [StaticLayoutKnown]", "indirect debug_types fixture 应展开成员数组 flags");
     expect_contains(
         output, "global_value.flags[0] [StaticLayoutKnown]", "indirect debug_types fixture 应展开 flags 首个元素");
     expect_contains(output,
@@ -1800,7 +1816,8 @@ void verify_dwarf5_loclists_base_addressx_fixture()
     expect_true(local_die.has_value(), "base_addressx loclists fixture 应能定位 local DIE");
     auto location_attr = elf_static_view::elf::attribute_of(debug, local_die->get(), DW_AT_location);
     expect_true(location_attr.has_value(), "base_addressx loclists fixture 的 local 应存在 DW_AT_location");
-    const auto location = elf_static_view::elf::read_location_description(debug, location_attr->get(), 8, 4, 5);
+    const auto location = elf_static_view::elf::read_location_description(
+        debug, location_attr->get(), 8, 4, 5, elf_static_view::elf::DwarfByteOrder::LittleEndian);
     expect_true(location.has_value(), "DW_FORM_loclistx 的 location 应可被 read_location_description 读取");
     expect_true(location->entry_count >= 4, "DW_FORM_loclistx 应至少保留四条 loclist entry");
     const auto concrete_entries =
@@ -1825,8 +1842,8 @@ void verify_location_expression_block_decoding()
         0x01,
         0x00,
     };
-    const auto absolute_location =
-        elf_static_view::elf::read_location_expression(debug, absolute_expr.data(), absolute_expr.size(), 4, 4, 2);
+    const auto absolute_location = elf_static_view::elf::read_location_expression(
+        debug, absolute_expr.data(), absolute_expr.size(), 4, 4, 2, elf_static_view::elf::DwarfByteOrder::LittleEndian);
     expect_true(absolute_location.has_value(), "DW_OP_addr 表达式块应可被解析");
     expect_true(absolute_location->kind == DW_LKIND_expression, "DW_OP_addr 表达式块应标记为 expression");
     expect_true(absolute_location->operations.size() == 1, "DW_OP_addr 表达式块应只包含一个操作");
@@ -1838,8 +1855,8 @@ void verify_location_expression_block_decoding()
         static_cast<std::uint8_t>(DW_OP_breg20),
         0x00,
     };
-    const auto breg_location =
-        elf_static_view::elf::read_location_expression(debug, breg_expr.data(), breg_expr.size(), 4, 4, 2);
+    const auto breg_location = elf_static_view::elf::read_location_expression(
+        debug, breg_expr.data(), breg_expr.size(), 4, 4, 2, elf_static_view::elf::DwarfByteOrder::LittleEndian);
     expect_true(breg_location.has_value(), "DW_OP_breg20 表达式块应可被解析且不崩溃");
     expect_true(breg_location->operations.size() == 1, "DW_OP_breg20 表达式块应只包含一个操作");
     expect_true(breg_location->operations.front().atom == DW_OP_breg20, "表达式块操作码应为 DW_OP_breg20");
@@ -3352,6 +3369,185 @@ void verify_class_array_nested_expand_fixture()
     }
 }
 
+void verify_dwarf_expression_decoding_and_member_evaluation()
+{
+    using elf_static_view::elf::DwarfByteOrder;
+
+    const auto decode = [](const std::vector<std::uint8_t>& bytes,
+                           const DwarfByteOrder byte_order = DwarfByteOrder::LittleEndian) {
+        return elf_static_view::elf::decode_dwarf_expression(bytes.data(), bytes.size(), 4, 4, byte_order);
+    };
+    const auto evaluate = [](const elf_static_view::elf::DecodedDwarfExpression& expression) {
+        return elf_static_view::elf::evaluate_data_member_location(expression);
+    };
+
+    const auto plus_uconst = decode({DW_OP_plus_uconst, 0x7f});
+    expect_true(plus_uconst.complete && evaluate(plus_uconst) == 127, "DW_OP_plus_uconst 应求值为对象基址加常量");
+
+    const auto constu_plus = decode({DW_OP_constu, 0x05, DW_OP_plus});
+    expect_true(constu_plus.complete && evaluate(constu_plus) == 5, "DW_OP_constu + DW_OP_plus 应求值为等价成员偏移");
+
+    const auto literal_plus = decode({DW_OP_lit7, DW_OP_plus, DW_OP_nop});
+    expect_true(literal_plus.complete && evaluate(literal_plus) == 7, "DW_OP_lit* + DW_OP_plus 与 nop 应可静态求值");
+
+    const auto big_endian_const =
+        decode({DW_OP_const4u, 0x00, 0x00, 0x01, 0x02, DW_OP_plus}, DwarfByteOrder::BigEndian);
+    expect_true(big_endian_const.complete && evaluate(big_endian_const) == 0x102,
+                "固定宽度表达式操作数应按目标大端字节序解码");
+
+    const auto truncated_uleb = decode({DW_OP_plus_uconst, 0x80});
+    expect_true(!truncated_uleb.complete && !evaluate(truncated_uleb).has_value(),
+                "截断 ULEB128 不得返回可用的部分表达式");
+
+    const auto unknown_opcode = decode({0xe0});
+    expect_true(!unknown_opcode.complete && !evaluate(unknown_opcode).has_value(),
+                "未知 DWARF 操作码不得被视为完整表达式");
+
+    const auto overflowing_add =
+        decode({DW_OP_plus_uconst, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f, DW_OP_plus_uconst, 0x01});
+    expect_true(overflowing_add.complete && !evaluate(overflowing_add).has_value(),
+                "成员偏移符号求值发生 int64 上溢时应返回未知");
+}
+
+void verify_manual_type_cache_reload_and_concurrency()
+{
+    const auto shared_path = std::filesystem::path(ELF_STATIC_VIEW_TEST_BINARY_DIR) / "manual_type_cache_reload.elf";
+    std::filesystem::copy_file(ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_FIXTURE_PATH,
+                               shared_path,
+                               std::filesystem::copy_options::overwrite_existing);
+
+    elf_static_view::ProjectLoader loader;
+    const auto first = loader.dump(
+        shared_path.string(),
+        {.include_runtime_only = true, .only_static_known = false, .symbol_name = std::nullopt, .expand_depth = 8});
+    expect_contains(elf_static_view::render_dump_text(first),
+                    "global_value [StaticAddressKnown] RefTarget",
+                    "同路径首次加载应读取 RefTarget 类型图");
+
+    std::filesystem::copy_file(ELF_STATIC_VIEW_DWARF5_STRX_TYPE_UNIT_FIXTURE_PATH,
+                               shared_path,
+                               std::filesystem::copy_options::overwrite_existing);
+    const auto second = loader.dump(
+        shared_path.string(),
+        {.include_runtime_only = true, .only_static_known = false, .symbol_name = std::nullopt, .expand_depth = 8});
+    expect_contains(elf_static_view::render_dump_text(second),
+                    "global_name [StaticAddressKnown] FancyName",
+                    "同路径文件更新后不得复用旧的手工类型描述");
+
+    std::vector<std::future<std::string>> tasks;
+    for (int index = 0; index < 4; ++index) {
+        tasks.push_back(std::async(std::launch::async, [shared_path] {
+            elf_static_view::ProjectLoader concurrent_loader;
+            const auto model = concurrent_loader.dump(shared_path.string(),
+                                                      {.include_runtime_only = true,
+                                                       .only_static_known = false,
+                                                       .symbol_name = std::nullopt,
+                                                       .expand_depth = 8});
+            return elf_static_view::render_dump_text(model);
+        }));
+    }
+    for (auto& task : tasks) {
+        expect_contains(task.get(),
+                        "global_name [StaticAddressKnown] FancyName",
+                        "并发解析同一更新文件时签名索引不得竞争或返回旧类型");
+    }
+}
+
+void verify_ref_sig8_dwarf64_type_unit_fixture()
+{
+    const auto types_section = elf_static_view::elf::ElfSymbolTable::read_section_bytes(
+        ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_DWARF64_FIXTURE_PATH, ".debug_types");
+    expect_true(types_section.has_value() && types_section->size() >= 12, "DWARF64 fixture 应包含 .debug_types");
+    expect_true((*types_section)[0] == 0xff && (*types_section)[1] == 0xff && (*types_section)[2] == 0xff &&
+                    (*types_section)[3] == 0xff,
+                "DWARF64 type unit 应使用 0xffffffff 初始长度标记");
+
+    elf_static_view::ProjectLoader loader;
+    const auto model = loader.dump(
+        ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_DWARF64_FIXTURE_PATH,
+        {.include_runtime_only = true, .only_static_known = false, .symbol_name = std::nullopt, .expand_depth = 8});
+    const auto* global = find_expanded_path(model.expanded, "global_value");
+    const auto* flags = find_expanded_path(model.expanded, "global_value.flags");
+    expect_true(global != nullptr && global->absolute_address.has_value(), "DWARF64 ref_sig8 fixture 应解析全局对象");
+    expect_true(flags != nullptr && flags->absolute_address == global->absolute_address.value() + 8U,
+                "DWARF64 type unit 的 8 字节 offset-size 不应被硬编码为 4");
+}
+
+void verify_expander_checked_address_arithmetic()
+{
+    elf_static_view::TypeNode scalar;
+    scalar.id = "scalar";
+    scalar.kind = elf_static_view::TypeKind::Base;
+    scalar.name = "scalar";
+    scalar.byte_size = 1;
+
+    elf_static_view::TypeNode aggregate;
+    aggregate.id = "aggregate";
+    aggregate.kind = elf_static_view::TypeKind::Struct;
+    aggregate.name = "aggregate";
+    aggregate.members.push_back({.name = "before",
+                                 .type = {.id = scalar.id},
+                                 .address = {.kind = elf_static_view::AddressKind::MemberOffset, .relative_offset = -2},
+                                 .availability = elf_static_view::Availability::StaticLayoutKnown});
+    aggregate.members.push_back({.name = "after",
+                                 .type = {.id = scalar.id},
+                                 .address = {.kind = elf_static_view::AddressKind::MemberOffset, .relative_offset = 4},
+                                 .availability = elf_static_view::Availability::StaticLayoutKnown});
+
+    elf_static_view::TypeNode derived;
+    derived.id = "derived";
+    derived.kind = elf_static_view::TypeKind::Class;
+    derived.name = "derived";
+    derived.bases.push_back({.type = {.id = aggregate.id}, .offset = 4});
+
+    elf_static_view::TypeNode huge_element;
+    huge_element.id = "huge-element";
+    huge_element.kind = elf_static_view::TypeKind::Base;
+    huge_element.name = "huge-element";
+    huge_element.byte_size = std::numeric_limits<std::uint64_t>::max() / 2U + 1U;
+
+    elf_static_view::TypeNode array;
+    array.id = "array";
+    array.kind = elf_static_view::TypeKind::Array;
+    array.name = "array";
+    array.element_type = elf_static_view::TypeRef{huge_element.id};
+    array.array_dimensions = {3};
+
+    std::vector<elf_static_view::VariableRecord> variables;
+    auto add_variable = [&](const std::string& name, const std::string& type_id, const std::uint64_t address) {
+        elf_static_view::VariableRecord variable;
+        variable.id = name;
+        variable.name = name;
+        variable.type = {.id = type_id};
+        variable.availability = elf_static_view::Availability::StaticAddressKnown;
+        variable.address.kind = elf_static_view::AddressKind::Absolute;
+        variable.address.absolute_address = address;
+        variables.push_back(std::move(variable));
+    };
+    add_variable("underflow", aggregate.id, 1);
+    add_variable("overflow", aggregate.id, std::numeric_limits<std::uint64_t>::max() - 1U);
+    add_variable("base_overflow", derived.id, std::numeric_limits<std::uint64_t>::max() - 1U);
+    add_variable("array_overflow", array.id, std::numeric_limits<std::uint64_t>::max() / 2U + 1U);
+
+    const std::vector<elf_static_view::TypeNode> types{scalar, aggregate, derived, huge_element, array};
+    const elf_static_view::analysis::Expander expander(types, 0, false);
+    const auto expanded = expander.build(variables, true, false, std::nullopt);
+
+    const auto* before = find_expanded_path(expanded, "underflow.before");
+    const auto* after = find_expanded_path(expanded, "overflow.after");
+    const auto* base = find_expanded_path(expanded, "base_overflow::<base>");
+    const auto* array_index_1 = find_expanded_path(expanded, "array_overflow[1]");
+    const auto* array_index_2 = find_expanded_path(expanded, "array_overflow[2]");
+    expect_true(before != nullptr && !before->absolute_address.has_value(), "成员负偏移下溢时应保留节点但清空绝对地址");
+    expect_true(after != nullptr && !after->absolute_address.has_value(), "成员正偏移上溢时应保留节点但清空绝对地址");
+    expect_true(base != nullptr && !base->absolute_address.has_value(), "基类偏移上溢时应保留节点但清空绝对地址");
+    expect_true(array_index_1 != nullptr && !array_index_1->absolute_address.has_value(),
+                "数组元素基址加法上溢时应保留节点但清空绝对地址");
+    expect_true(array_index_2 != nullptr && !array_index_2->absolute_address.has_value() &&
+                    !array_index_2->relative_offset.has_value(),
+                "数组 stride 乘法溢出时不应生成回绕后的相对或绝对地址");
+}
+
 void verify_data_member_location_plus_uconst_fixture()
 {
     elf_static_view::ProjectLoader loader;
@@ -3553,6 +3749,7 @@ int main()
         verify_gnu_addr_index_fixture();
         verify_ref_sig8_debug_types_fixture();
         verify_ref_sig8_indirect_fixture();
+        verify_ref_sig8_dwarf64_type_unit_fixture();
         verify_gcc_ref_addr_fixture();
         verify_gcc_small_ref_fixture(ELF_STATIC_VIEW_GCC_DWARF5_REF1_FIXTURE_PATH, "ref1");
         verify_gcc_small_ref_fixture(ELF_STATIC_VIEW_GCC_DWARF5_REF2_FIXTURE_PATH, "ref2");
@@ -3587,6 +3784,7 @@ int main()
         verify_implicit_const_fixture();
         verify_dwarf5_strx_type_unit_fixture();
         verify_dwarf5_strx_type_unit_abbrev_offset_fixture();
+        verify_manual_type_cache_reload_and_concurrency();
         verify_split_dwarf_fixture();
         verify_split_dwp_fixture();
         verify_debug_sup_fixture();
@@ -3611,6 +3809,8 @@ int main()
         verify_dwarf5_loclists_base_default_fixture();
         verify_dwarf5_loclists_base_addressx_fixture();
         verify_location_expression_block_decoding();
+        verify_dwarf_expression_decoding_and_member_evaluation();
+        verify_expander_checked_address_arithmetic();
         verify_dwarf5_loclists_start_end_fixture();
         verify_dwarf5_loclists_startx_endx_fixture();
         verify_dwarf5_loclists_startx_length_fixture();

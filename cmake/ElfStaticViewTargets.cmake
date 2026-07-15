@@ -8,6 +8,7 @@ add_library(elf_static_view_core
   src/analysis/project_summary.cc
   src/analysis/static_address_query.cc
   src/elf/elf_symbol_table.cc
+  src/elf/dwarf_expression.cc
   src/elf/dwarf_reader.cc
   src/elf/raw_dwarf_reader.cc
   src/elf/dwarf_wrappers.cc

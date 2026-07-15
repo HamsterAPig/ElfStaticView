@@ -20,6 +20,7 @@ add_patched_elf_fixture(rnglists_startx_length_bit_piece.elf "${rnglistx_bit_pie
 add_linux_elf_fixture(ref_sig8_debug_types_base.elf fixtures/cpp/ref_sig8_debug_types.cc "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-4" "-fdebug-types-section" "-O0")
 add_patched_elf_fixture(ref_sig8_debug_types.elf "${ref_sig8_debug_types_base.elf_OUTPUT}" patch_ref_sig8_debug_types -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_patched_elf_fixture(ref_sig8_debug_types_indirect.elf "${ref_sig8_debug_types.elf_OUTPUT}" patch_debug_types_name_indirect -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
+add_linux_elf_fixture(ref_sig8_debug_types_dwarf64.elf fixtures/cpp/ref_sig8_debug_types.cc "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-4" "-gdwarf64" "-fdebug-types-section" "-O0")
 add_linux_elf_fixture(dwarf5_strx_type_unit.elf fixtures/cpp/dwarf5_strx_type_unit.cc "${ELF_STATIC_VIEW_CLANGXX}" "-std=c++20" "-gdwarf-5" "-fdebug-types-section" "-fdebug-default-version=5" "-O0")
 add_patched_elf_fixture(dwarf5_strx_type_unit_abbrev_offset.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_type_unit_abbrev_offset -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}")
 add_patched_elf_fixture(dwarf5_strx2_type_unit.elf "${dwarf5_strx_type_unit.elf_OUTPUT}" patch_dwarf5_strx_form -ObjcopyPath "${ELF_STATIC_VIEW_LLVM_OBJCOPY}" -Mode strx2)
@@ -216,6 +217,7 @@ add_dependencies(elf_static_view_tests rnglists_startx_endx_bit_piece.elf_fixtur
 add_dependencies(elf_static_view_tests rnglists_startx_length_bit_piece.elf_fixture)
 add_dependencies(elf_static_view_tests ref_sig8_debug_types.elf_fixture)
 add_dependencies(elf_static_view_tests ref_sig8_debug_types_indirect.elf_fixture)
+add_dependencies(elf_static_view_tests ref_sig8_debug_types_dwarf64.elf_fixture)
 add_dependencies(elf_static_view_tests dwarf5_strx_type_unit.elf_fixture)
 add_dependencies(elf_static_view_tests dwarf5_strx_type_unit_abbrev_offset.elf_fixture)
 add_dependencies(elf_static_view_tests dwarf5_strx2_type_unit.elf_fixture)
@@ -283,6 +285,7 @@ target_compile_definitions(
     ELF_STATIC_VIEW_RNGLISTS_STARTX_LENGTH_FIXTURE_PATH="${rnglists_startx_length_bit_piece.elf_OUTPUT}"
     ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_FIXTURE_PATH="${ref_sig8_debug_types.elf_OUTPUT}"
     ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_INDIRECT_FIXTURE_PATH="${ref_sig8_debug_types_indirect.elf_OUTPUT}"
+    ELF_STATIC_VIEW_REF_SIG8_DEBUG_TYPES_DWARF64_FIXTURE_PATH="${ref_sig8_debug_types_dwarf64.elf_OUTPUT}"
     ELF_STATIC_VIEW_DWARF5_STRX1_FIXTURE_PATH="${dwarf5_strx_type_unit.elf_OUTPUT}"
     ELF_STATIC_VIEW_DWARF5_STRX2_FIXTURE_PATH="${dwarf5_strx2_type_unit.elf_OUTPUT}"
     ELF_STATIC_VIEW_DWARF5_STRX3_FIXTURE_PATH="${dwarf5_strx3_type_unit.elf_OUTPUT}"
